@@ -1,5 +1,6 @@
 'use strict';
 const path = require('path');
+const os = require('os');
 const { app, BrowserWindow, Menu, shell } = require('electron');
 const { start } = require('./server');
 
@@ -38,7 +39,13 @@ async function createWindow(port) {
 
 app.whenReady().then(async () => {
   // durable backup lives outside the app's own data dir so updates/reinstalls can't wipe it
-  const dataDir = path.join(app.getPath('documents'), 'AniBrowser');
+  let dataDir;
+  if (process.platform === 'win32') {
+    dataDir = path.join(app.getPath('documents'), 'AniBrowser');
+  } else {
+    // Linux/macOS: XDG data dir (~/.local/share/AniBrowser) instead of Documents
+    dataDir = path.join(process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local', 'share'), 'AniBrowser');
+  }
   const { port } = await start({ dataDir });
   await createWindow(port);
   app.on('activate', () => {
