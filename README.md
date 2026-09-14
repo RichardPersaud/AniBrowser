@@ -8,12 +8,20 @@ Personal desktop app for browsing and streaming anime — a GUI equivalent of
 
 ## Install
 
-Grab the latest **AniBrowser.Setup.x.y.z.exe** from the repo's
-[Releases](https://github.com/RichardPersaud/AniBrowser/releases) page and run
-it — standard installer with a desktop shortcut. (Installers aren't committed
-to the repo because GitHub blocks files over 100MB; every build ships as a
-release asset instead.) Settings/favorites/history survive updates and
-reinstalls.
+1. Go to the [Releases page](https://github.com/RichardPersaud/AniBrowser/releases)
+   — the repo is private, so sign in to GitHub first (or ask the owner for access)
+2. Under the latest release, download **AniBrowser.Setup.x.y.z.exe** from Assets
+   (direct link for v1.0.13:
+   [AniBrowser.Setup.1.0.13.exe](https://github.com/RichardPersaud/AniBrowser/releases/download/v1.0.13/AniBrowser.Setup.1.0.13.exe))
+3. Run the installer — standard setup with a desktop shortcut
+
+**SmartScreen note:** the installer isn't code-signed, so Windows may warn
+*"Windows protected your PC"*. Click **More info → Run anyway** — that's
+expected for a self-built app.
+
+Installers aren't committed to the repo because GitHub blocks files over
+100MB; every build ships as a release asset instead. Settings, favorites and
+watch history survive updates and reinstalls.
 
 ## Use
 
