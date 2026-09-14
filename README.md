@@ -8,8 +8,12 @@ Personal desktop app for browsing and streaming anime — a GUI equivalent of
 
 ## Install
 
-Run the latest `dist/AniBrowser Setup x.y.z.exe` — standard installer with a
-desktop shortcut. Settings/favorites/history survive updates and reinstalls.
+Grab the latest **AniBrowser.Setup.x.y.z.exe** from the repo's
+[Releases](https://github.com/RichardPersaud/AniBrowser/releases) page and run
+it — standard installer with a desktop shortcut. (Installers aren't committed
+to the repo because GitHub blocks files over 100MB; every build ships as a
+release asset instead.) Settings/favorites/history survive updates and
+reinstalls.
 
 ## Use
 
