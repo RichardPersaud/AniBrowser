@@ -4,11 +4,13 @@
   "version": "1.0.13",
   "description": "Personal anime browsing and streaming desktop app",
   "main": "main.js",
-  "author": "richa",
+  "author": "richa <richa@localhost>",
   "license": "MIT",
+  "homepage": "https://github.com/RichardPersaud/AniBrowser",
   "scripts": {
     "start": "electron .",
-    "dist": "electron-builder --win nsis"
+    "dist": "electron-builder --win nsis",
+    "dist:linux": "electron-builder --linux AppImage deb"
   },
   "build": {
     "appId": "io.local.anibrowser",
@@ -20,6 +22,13 @@
       "ui/**/*",
       "package.json"
     ],
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "AudioVideo"
+    },
     "win": {
       "target": "nsis"
     },
