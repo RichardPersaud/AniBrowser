@@ -111,7 +111,82 @@ body {
 }
 #searchForm button:hover { background: var(--accent-dim); color: #fff; }
 
-#topbar-right { position: relative; }
+#topbar-right { position: relative; display: flex; align-items: center; gap: 10px; }
+
+/* ---- notification bell ---- */
+#bellWrap { position: relative; }
+#notifBtn {
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  border-radius: var(--radius);
+  padding: 8px 11px;
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+}
+#notifBtn:hover { color: var(--text); border-color: var(--accent-dim); }
+#notifBtn.unread { color: var(--accent); border-color: var(--accent-dim); }
+#notifBadge {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--danger);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+#notifPanel {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  width: 300px;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  z-index: 40;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+}
+.notif-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+.notif-head h3 { font-size: 14px; color: var(--text); }
+#notifList { display: flex; flex-direction: column; gap: 8px; max-height: 320px; overflow-y: auto; }
+.notif-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 9px 12px;
+  cursor: pointer;
+  text-align: left;
+  color: var(--text);
+  font-family: inherit;
+}
+.notif-item:hover { border-color: var(--accent-dim); }
+.notif-item .notif-title {
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.notif-item .notif-sub { font-size: 11px; color: var(--accent); }
+.notif-item .notif-hint { font-size: 10px; color: var(--muted); }
 #settingsBtn {
   background: var(--bg3);
   border: 1px solid var(--border);
@@ -557,7 +632,13 @@ h2 { font-size: 16px; margin: 18px 0 12px; color: var(--muted); font-weight: 600
   text-align: center;
 }
 .ep-btn:hover { border-color: var(--accent); color: var(--accent); }
-.ep-btn.watched { color: var(--muted); border-style: dashed; }
+.ep-btn.watched {
+  color: var(--muted);
+  border-style: dashed;
+  background: var(--bg2);
+  opacity: 0.75;
+}
+.ep-btn.watched:hover { color: var(--accent); opacity: 1; }
 .ep-btn.current { background: var(--accent); color: #06231f; font-weight: 700; }
 
 /* ---- player ---- */

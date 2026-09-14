@@ -320,6 +320,21 @@ async function route(req, res) {
     return sendJson(res, 200, { episodes: eps });
   }
 
+  if (p === '/api/epcounts' && req.method === 'POST') {
+    // batched episode counts for the favorites new-episode checker
+    let body = '';
+    for await (const chunk of req) body += chunk;
+    let slugs = [];
+    try { slugs = JSON.parse(body).slugs || []; } catch { /* treated as empty */ }
+    slugs = slugs.filter((s) => /^[a-z0-9-]+$/i.test(String(s))).slice(0, 100);
+    const out = {};
+    await Promise.all(slugs.map(async (s) => {
+      try { out[s] = (await scraper.episodes(s)).length; }
+      catch { /* leave the slug out on failure */ }
+    }));
+    return sendJson(res, 200, { counts: out });
+  }
+
   if (p === '/api/sources') {
     const slug = q.get('slug') || '';
     const ep = q.get('ep') || '';
