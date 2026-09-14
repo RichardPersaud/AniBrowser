@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AniBrowser</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="bootSplash">
+    <div class="boot-brand">Ani<span>Browser</span></div>
+    <div class="spinner"></div>
+    <p class="boot-hint">Loading your library…</p>
+  </div>
+  <header id="topbar">
+    <button id="sidebarBtn" title="Toggle sidebar">☰</button>
+    <div id="brand">Ani<span>Browser</span></div>
+    <form id="searchForm" autocomplete="off">
+      <div id="searchBox">
+        <input id="searchInput" type="search" placeholder="Search anime…" spellcheck="false">
+        <div id="suggestions" hidden></div>
+      </div>
+      <button type="submit" title="Search">Search</button>
+    </form>
+    <div id="topbar-right">
+      <button id="settingsBtn" title="Settings">⚙ Settings</button>
+      <div id="settingsPanel" hidden>
+        <h3>Settings</h3>
+        <label class="setting-row">Default video quality
+          <select id="defQualitySel">
+            <option value="auto">Auto (adaptive)</option>
+            <option value="1080">1080p</option>
+            <option value="720">720p</option>
+            <option value="480">480p</option>
+            <option value="360">360p</option>
+          </select>
+        </label>
+        <label class="setting-row">Default audio track
+          <select id="defTypeSel">
+            <option value="sub">SUB (original + subs)</option>
+            <option value="dub">DUB</option>
+          </select>
+        </label>
+        <p class="hint">Applied to new episodes you play.</p>
+        <hr class="setting-sep">
+        <p class="hint" id="backupHint"></p>
+        <hr class="setting-sep">
+        <p class="hint" id="appVersion">AniBrowser</p>
+      </div>
+    </div>
+  </header>
+
+  <div id="layout">
+    <aside id="sidebar">
+      <nav class="side-group">
+        <button class="side-item" data-nav="home"><span class="side-ico">⌂</span> Home</button>
+        <button class="side-item" data-nav="browse"><span class="side-ico">▦</span> Browse</button>
+        <button class="side-item" data-nav="favorites"><span class="side-ico">♥</span> Favorites <span id="favCount" class="side-badge" hidden></span></button>
+      </nav>
+      <div class="side-foot">AniBrowser <span id="sideVersion"></span></div>
+    </aside>
+
+    <main id="main">
+      <!-- HOME -->
+      <section id="homeView">
+        <div id="continueSection" hidden>
+          <div class="section-head">
+            <h2>Continue watching</h2>
+            <button id="clearHistoryBtn" class="pill-btn" hidden title="Remove every show from watch history">Clear history</button>
+          </div>
+          <div id="continueGrid" class="grid"></div>
+        </div>
+        <div id="recentSection" hidden>
+          <h2>Recently updated</h2>
+          <div id="recentLoading"><div class="spinner small"></div></div>
+          <div id="recentGrid" class="grid"></div>
+        </div>
+        <div id="resultsSection" hidden>
+          <h2 id="resultsTitle">Results</h2>
+          <div id="resultsGrid" class="grid"></div>
+          <div id="moreRow"><button id="moreBtn" hidden>Load more</button></div>
+        </div>
+        <div id="emptyState">
+          <div class="empty-icon">▷</div>
+          <p>Search for an anime above to get started.</p>
+          <p class="hint">Everything streams through a local proxy — nothing leaves this machine except the requests to the source site.</p>
+        </div>
+        <div id="loadingState" hidden><div class="spinner"></div></div>
+      </section>
+
+      <!-- BROWSE -->
+      <section id="browseView" hidden>
+        <h2>Browse all</h2>
+        <div id="alphaBar"></div>
+        <div id="browseFilters">
+          <label class="bf">Type
+            <select id="bfType"><option value="">Any</option></select>
+          </label>
+          <label class="bf">Status
+            <select id="bfStatus"><option value="">Any</option></select>
+          </label>
+          <label class="bf">Genre
+            <select id="bfGenre"><option value="">Any</option></select>
+          </label>
+          <label class="bf">Rating
+            <select id="bfRating"><option value="">Any</option></select>
+          </label>
+          <label class="bf">Score
+            <select id="bfScore"><option value="">Any</option></select>
+          </label>
+          <label class="bf">Season
+            <select id="bfSeason"><option value="">Any</option></select>
+          </label>
+          <label class="bf">Audio
+            <select id="bfLanguage"><option value="">Any</option></select>
+          </label>
+          <label class="bf">Sort
+            <select id="bfSort"><option value="">Default</option></select>
+          </label>
+          <button id="bfReset" class="pill-btn" title="Clear all filters">Reset</button>
+        </div>
+        <div id="browseLoading" hidden><div class="spinner"></div></div>
+        <div id="browseGrid" class="grid"></div>
+        <div id="browsePager">
+          <button id="browsePrev" class="pill-btn">◀ Prev</button>
+          <div id="browsePages"></div>
+          <span id="browsePageLabel"></span>
+          <button id="browseNext" class="pill-btn">Next ▶</button>
+        </div>
+      </section>
+
+      <!-- FAVORITES -->
+      <section id="favView" hidden>
+        <h2>Favorites</h2>
+        <div id="favGrid" class="grid"></div>
+        <div id="favEmpty">
+          <div class="empty-icon">♥</div>
+          <p>No favorites yet.</p>
+          <p class="hint">Hit the ♥ on any poster to pin it here.</p>
+        </div>
+      </section>
+
+      <!-- DETAIL -->
+      <section id="detailView" hidden>
+        <button class="back-btn" data-back="back">← Back</button>
+        <div id="detailHead">
+          <img id="detailPoster" alt="">
+          <div id="detailMeta">
+            <h1 id="detailTitle"></h1>
+            <div id="detailControls">
+              <div id="typeToggle" class="segmented">
+                <button data-type="sub" class="active">SUB</button>
+                <button data-type="dub">DUB</button>
+              </div>
+              <span id="epCount"></span>
+              <button id="favBtn" class="pill-btn" title="Add to favorites">♡ Favorite</button>
+            </div>
+          </div>
+        </div>
+        <div id="detailInfo" hidden>
+          <div id="detailInfoLoading"><div class="spinner small"></div></div>
+          <div id="detailSkeleton" hidden></div>
+          <p id="detailSynopsis"></p>
+          <div id="detailChips"></div>
+          <div id="detailGenres" class="chip-row"></div>
+          <div id="detailMetaRows"></div>
+        </div>
+      <h2>Episodes</h2>
+      <div id="epGrid" class="ep-grid"></div>
+      <div id="epLoading"><div class="spinner"></div></div>
+    </section>
+
+    <!-- PLAYER -->
+    <section id="playerView" hidden>
+      <div id="playerWrap">
+        <video id="video" controls playsinline></video>
+        <button id="skipIntroBtn" class="overlay-btn" hidden>Skip Intro →</button>
+        <div id="playerLoading" class="player-loading"><div class="spinner"></div><div id="playerStatus"></div><button id="playerCancelBtn" class="back-btn">← Back to episodes</button></div>
+        <div id="playerTop">
+          <button class="back-btn" data-back="detail">← Episodes</button>
+          <div id="playerTitle"></div>
+          <div id="playerRight">
+            <select id="qualitySel" title="Quality"><option value="-1">Auto</option></select>
+            <button id="autoNextBtn" class="pill-btn" title="Auto-play next episode">Auto-next: OFF</button>
+          </div>
+        </div>
+        <div id="playerBottom">
+          <button id="prevEpBtn" class="pill-btn">◀ Prev</button>
+          <button id="nextEpBtn" class="pill-btn">Next ▶</button>
+          <span id="providerLabel"></span>
+        </div>
+      </div>
+    </section>
+    </main>
+  </div>
+
+  <div id="miniPlayer" hidden>
+    <div id="miniBar">
+      <span id="miniTitle"></span>
+      <button id="miniExpand" title="Back to full player">⤢</button>
+      <button id="miniClose" title="Stop playback">✕</button>
+    </div>
+    <div id="miniSlot"></div>
+  </div>
+  <div id="toast" hidden></div>
+  <script src="hls.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
