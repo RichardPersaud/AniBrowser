@@ -23,6 +23,18 @@
       <button type="submit" title="Search">Search</button>
     </form>
     <div id="topbar-right">
+      <div id="bellWrap">
+        <button id="notifBtn" title="Notifications">🔔</button>
+        <span id="notifBadge" hidden></span>
+        <div id="notifPanel" hidden>
+          <div class="notif-head">
+            <h3>Notifications</h3>
+            <button id="notifClear" class="pill-btn" title="Dismiss all">Mark all seen</button>
+          </div>
+          <div id="notifList"></div>
+          <p id="notifEmpty" class="hint">No notifications yet — new episodes of your favorites will show up here.</p>
+        </div>
+      </div>
       <button id="settingsBtn" title="Settings">⚙ Settings</button>
       <div id="settingsPanel" hidden>
         <h3>Settings</h3>

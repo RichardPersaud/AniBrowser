@@ -41,8 +41,14 @@ watch history survive updates and reinstalls.
 7. ♥ on any poster (or the button on the detail page) adds a show to Favorites;
    ✕ on a continue-watching card (or "Clear history") removes it from the
    watch history
-8. App version shows in Settings and at the bottom of the sidebar
-9. Settings, favorites and watch history are mirrored to
+8. Already-watched episodes are marked with a ✓ in the episode list; the one
+   you stopped on is highlighted as the resume point
+9. 🔔 bell in the top bar: when a favorited show releases new episodes, it
+   lands in the notifications panel (badge + toast). Favorites are polled
+   every 10 minutes; "Mark all seen" dismisses them. Notification state is
+   saved with the backup.
+10. App version shows in Settings and at the bottom of the sidebar
+11. Settings, favorites and watch history are mirrored to
    `Documents\AniBrowser\anibrowser-data.json` (falls back to
    `%USERPROFILE%\AniBrowser` if Documents is OneDrive-synced and stalls)
    so updates and reinstalls don't reset them

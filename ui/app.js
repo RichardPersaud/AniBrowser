@@ -122,9 +122,11 @@ function toggleFav(r) {
   const f = getFavs();
   if (f[r.slug]) {
     delete f[r.slug];
+    forgetFavTracking(r.slug); // drop its notification state
     toast('Removed from favorites');
   } else {
     f[r.slug] = { title: r.title, poster: r.poster, ts: Date.now() };
+    baselineFavCount(r.slug); // remember current episode count so only *new* releases notify
     toast('Added to favorites ♥');
   }
   setFavs(f);
@@ -170,6 +172,127 @@ function renderFavorites() {
   $('favEmpty').hidden = items.length > 0;
   updateFavCount();
 }
+
+/* ---------------- new-episode notifications ---------------- */
+
+// favorites are polled on a timer; when a show's episode count grows past the
+// last-seen baseline, a notification lands in the bell. Persisted in prefs:
+//   favEpSeen  = { slug: lastSeenEpisodeCount }
+//   notifActive = [{ slug, title, newCount, count }]   (cleared by "Mark all seen")
+
+let checkingFavs = false;
+
+function favSeen() { return prefs().favEpSeen || {}; }
+function notifActive() { return prefs().notifActive || []; }
+function setNotifActive(list) { const p = prefs(); p.notifActive = list; setPrefs(p); }
+
+async function epcountsRequest(slugs) {
+  const res = await fetch('/api/epcounts', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ slugs }),
+    signal: AbortSignal.timeout(90000),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return (await res.json()).counts || {};
+}
+
+// remember the current episode count for a just-favorited show (no notification)
+async function baselineFavCount(slug) {
+  try {
+    const counts = await epcountsRequest([slug]);
+    if (typeof counts[slug] === 'number') {
+      const p = prefs();
+      p.favEpSeen = { ...(p.favEpSeen || {}), [slug]: counts[slug] };
+      setPrefs(p);
+    }
+  } catch { /* the periodic poll will baseline it instead */ }
+}
+
+// drop notification state when a show is un-favorited
+function forgetFavTracking(slug) {
+  const p = prefs();
+  if (p.favEpSeen) { const s = { ...p.favEpSeen }; delete s[slug]; p.favEpSeen = s; }
+  if ((p.notifActive || []).some((n) => n.slug === slug)) {
+    p.notifActive = p.notifActive.filter((n) => n.slug !== slug);
+  }
+  setPrefs(p);
+  renderNotifPanel();
+}
+
+async function checkFavEpisodes() {
+  if (checkingFavs) return;
+  const favs = getFavs();
+  const slugs = Object.keys(favs);
+  if (!slugs.length) { renderNotifPanel(); return; }
+  checkingFavs = true;
+  try {
+    const counts = await epcountsRequest(slugs);
+    const seen = favSeen();
+    let active = notifActive().filter((n) => favs[n.slug]); // drop un-favorited shows
+    const fresh = [];
+    for (const slug of slugs) {
+      const count = counts[slug];
+      if (typeof count !== 'number') continue;
+      const last = seen[slug];
+      if (typeof last !== 'number') { seen[slug] = count; continue; } // first sighting = baseline
+      if (count > last) {
+        seen[slug] = count;
+        const idx = active.findIndex((n) => n.slug === slug);
+        const carried = idx >= 0 ? active[idx].newCount : 0;
+        const entry = { slug, title: favs[slug].title || slug, newCount: count - last + carried, count };
+        if (idx >= 0) active[idx] = entry; else active.push(entry);
+        if (idx < 0) fresh.push(entry);
+      }
+    }
+    const p = prefs();
+    p.favEpSeen = seen;
+    p.notifActive = active;
+    setPrefs(p);
+    renderNotifPanel();
+    for (const n of fresh) toast(`🔔 ${n.title}: ${n.newCount} new episode${n.newCount === 1 ? '' : 's'}!`);
+  } catch { /* poll is best-effort; the next tick retries */ }
+  finally { checkingFavs = false; }
+}
+
+function renderNotifPanel() {
+  const items = notifActive();
+  const list = $('notifList');
+  list.innerHTML = '';
+  $('notifEmpty').hidden = items.length > 0;
+  $('notifClear').hidden = items.length === 0;
+  for (const n of items) {
+    const item = el('button', 'notif-item');
+    item.appendChild(el('span', 'notif-title', n.title));
+    item.appendChild(el('span', 'notif-sub',
+      `${n.newCount} new episode${n.newCount === 1 ? '' : 's'} out (up to EP ${n.count})`));
+    item.appendChild(el('span', 'notif-hint', 'Click to open the show'));
+    item.addEventListener('click', () => {
+      $('notifPanel').hidden = true;
+      const fav = getFavs()[n.slug];
+      openDetail(n.slug, n.title, fav ? fav.poster : undefined);
+    });
+    list.appendChild(item);
+  }
+  const badge = $('notifBadge');
+  badge.textContent = String(items.length);
+  badge.hidden = items.length === 0;
+  $('notifBtn').classList.toggle('unread', items.length > 0);
+}
+
+$('notifBtn').addEventListener('click', () => {
+  const panel = $('notifPanel');
+  panel.hidden = !panel.hidden;
+  if (!panel.hidden) renderNotifPanel();
+});
+$('notifClear').addEventListener('click', () => {
+  setNotifActive([]);
+  renderNotifPanel();
+});
+document.addEventListener('click', (e) => {
+  const panel = $('notifPanel');
+  if (!panel.hidden && !e.target.closest('#bellWrap')) panel.hidden = true;
+});
 
 async function api(path) {
   let res;
@@ -861,8 +984,13 @@ function renderEpisodes() {
   const prog = getJSON()[state.slug] || {};
   for (const ep of state.episodes) {
     const btn = el('button', 'ep-btn', ep.num);
-    if (ep.num === String(state.epNum)) btn.classList.add('current');
-    else if (Number(ep.num) < Number(prog.epNum)) btn.classList.add('watched');
+    if (ep.num === String(state.epNum)) {
+      btn.classList.add('current');
+    } else if (Number(ep.num) < Number(prog.epNum)) {
+      // already watched (before the resume point): check mark + dimmed style
+      btn.classList.add('watched');
+      btn.textContent = `✓ ${ep.num}`;
+    }
     btn.addEventListener('click', () => startPlayback(ep.num, state.type));
     grid.appendChild(btn);
   }
@@ -1205,9 +1333,12 @@ function hideSplash() {
   applySidebar();
   initBrowseUI();
   updateFavCount();
+  renderNotifPanel(); // restore badge/panel state saved before the last close
   renderContinue();
   await loadRecent(); // home is ready once the recently-updated grid lands
   hideSplash();
   loadVersion();
   document.querySelector('.side-item[data-nav="home"]').classList.add('active');
+  checkFavEpisodes(); // and every 10 minutes afterwards
+  setInterval(checkFavEpisodes, 10 * 60 * 1000);
 })();
