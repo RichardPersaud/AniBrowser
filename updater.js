@@ -16,6 +16,7 @@ function initUpdater() {
 
   autoUpdater.autoDownload = false; // user-driven download
   autoUpdater.autoInstallOnAppQuit = false;
+  autoUpdater.logger = console; // updater diagnostics land in the app log
 
   autoUpdater.on('update-available', (info) => {
     status = { state: 'available', version: info.version, progress: 0, error: null };
