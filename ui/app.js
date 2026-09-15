@@ -1124,29 +1124,29 @@ async function startPlayback(epNum, type) {
   $('providerLabel').textContent = `via ${src.provider || 'hianime'}`;
   $('playerLoading').hidden = true;
 
-  if (!Hls.isSupported()) {
+  if (src.hls === false || !Hls.isSupported()) {
+    // native stream (e.g. mp4): no hls quality menu — play directly
     video.src = src.proxiedUrl;
     video.play().catch(() => {});
-    return;
+  } else {
+    const hls = new Hls({
+      maxBufferLength: 60,
+      fragLoadingTimeOut: 30000,
+    });
+    state.hls = hls;
+    hls.on(Hls.Events.MANIFEST_PARSED, () => {
+      buildQualityMenu(hls);
+      video.play().catch(() => {});
+    });
+    hls.on(Hls.Events.ERROR, (_, data) => {
+      if (data.fatal) {
+        $('playerStatus').textContent = 'Playback error — try another episode or quality.';
+        toast('Playback error: ' + data.details, true);
+      }
+    });
+    hls.loadSource(src.proxiedUrl);
+    hls.attachMedia(video);
   }
-
-  const hls = new Hls({
-    maxBufferLength: 60,
-    fragLoadingTimeOut: 30000,
-  });
-  state.hls = hls;
-  hls.on(Hls.Events.MANIFEST_PARSED, () => {
-    buildQualityMenu(hls);
-    video.play().catch(() => {});
-  });
-  hls.on(Hls.Events.ERROR, (_, data) => {
-    if (data.fatal) {
-      $('playerStatus').textContent = 'Playback error — try another episode or quality.';
-      toast('Playback error: ' + data.details, true);
-    }
-  });
-  hls.loadSource(src.proxiedUrl);
-  hls.attachMedia(video);
 
   // subtitles
   const def = (src.subtitles || []).find((s) => s.default) || src.subtitles[0];
