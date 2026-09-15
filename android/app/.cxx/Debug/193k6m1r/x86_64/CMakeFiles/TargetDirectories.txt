@@ -1,3 +1,0 @@
-/home/retro/src/AniBrowser/android/app/.cxx/Debug/193k6m1r/x86_64/CMakeFiles/anibrowser.dir
-/home/retro/src/AniBrowser/android/app/.cxx/Debug/193k6m1r/x86_64/CMakeFiles/edit_cache.dir
-/home/retro/src/AniBrowser/android/app/.cxx/Debug/193k6m1r/x86_64/CMakeFiles/rebuild_cache.dir
