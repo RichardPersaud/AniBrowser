@@ -66,7 +66,9 @@ installer once:
    cards); Show restores them
 12. Episodes whose embeds are all dead at the source are crossed out in the
    episode list after one failed attempt — the error message also says so
-13. Settings, favorites and watch history are mirrored to
+13. Detail pages show up to 5 recommendations picked from the show's own
+   genres (most-watched within each genre)
+14. Settings, favorites and watch history are mirrored to
    `Documents\AniBrowser\anibrowser-data.json` (falls back to
    `%USERPROFILE%\AniBrowser` if Documents is OneDrive-synced and stalls)
    so updates and reinstalls don't reset them
