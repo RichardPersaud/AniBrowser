@@ -6,3 +6,6 @@ app/keystore.properties
 *.zip
 .gradle/
 build/
+local.properties
+app/.cxx/
+.cxx/

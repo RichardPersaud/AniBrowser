@@ -1,1 +1,0 @@
-/home/retro/src/AniBrowser/android/app/build/intermediates/cxx/RelWithDebInfo/c5ec6o6r/obj/x86_64

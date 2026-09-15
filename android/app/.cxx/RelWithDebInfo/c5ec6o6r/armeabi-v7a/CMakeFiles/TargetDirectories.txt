@@ -1,3 +1,0 @@
-/home/retro/src/AniBrowser/android/app/.cxx/RelWithDebInfo/c5ec6o6r/armeabi-v7a/CMakeFiles/anibrowser.dir
-/home/retro/src/AniBrowser/android/app/.cxx/RelWithDebInfo/c5ec6o6r/armeabi-v7a/CMakeFiles/edit_cache.dir
-/home/retro/src/AniBrowser/android/app/.cxx/RelWithDebInfo/c5ec6o6r/armeabi-v7a/CMakeFiles/rebuild_cache.dir
