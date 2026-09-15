@@ -2,6 +2,7 @@ package io.local.anibrowser
 
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.app.AlertDialog
 import android.graphics.Color
 import android.os.Bundle
 import android.os.Handler
@@ -10,6 +11,7 @@ import android.util.Log
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.webkit.JsResult
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
@@ -108,8 +110,8 @@ class MainActivity : Activity() {
         settings.domStorageEnabled = true            // app.js stores prefs/favorites/progress in localStorage
         settings.databaseEnabled = true
         settings.mediaPlaybackRequiresUserGesture = false
-        settings.useWideViewPort = true              // desktop layout — style.css has no @media queries
-        settings.loadWithOverviewMode = true
+        settings.useWideViewPort = false             // honor index.html's device-width viewport meta
+        settings.loadWithOverviewMode = false
         settings.allowFileAccess = false
         settings.allowContentAccess = false
         settings.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
@@ -126,6 +128,25 @@ class MainActivity : Activity() {
             }
         }
         webChromeClient = object : WebChromeClient() {
+            override fun onJsAlert(view: WebView, url: String, message: String, result: JsResult): Boolean {
+                AlertDialog.Builder(this@MainActivity)
+                    .setMessage(message)
+                    .setPositiveButton(android.R.string.ok) { _, _ -> result.confirm() }
+                    .setOnCancelListener { result.cancel() }
+                    .show()
+                return true
+            }
+
+            override fun onJsConfirm(view: WebView, url: String, message: String, result: JsResult): Boolean {
+                AlertDialog.Builder(this@MainActivity)
+                    .setMessage(message)
+                    .setPositiveButton(android.R.string.ok) { _, _ -> result.confirm() }
+                    .setNegativeButton(android.R.string.cancel) { _, _ -> result.cancel() }
+                    .setOnCancelListener { result.cancel() }
+                    .show()
+                return true
+            }
+
             override fun onShowCustomView(view: View, cb: WebChromeClient.CustomViewCallback) {
                 if (customView != null) { cb.onCustomViewHidden(); return }
                 customView = view

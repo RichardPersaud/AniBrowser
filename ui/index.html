@@ -51,7 +51,7 @@
           <p id="notifEmpty" class="hint">No notifications yet — new episodes of your favorites will show up here.</p>
         </div>
       </div>
-      <button id="settingsBtn" title="Settings"><svg class="icon"><use href="#i-gear"></use></svg> Settings</button>
+      <button id="settingsBtn" title="Settings"><svg class="icon"><use href="#i-gear"></use></svg> <span class="btn-label">Settings</span></button>
       <div id="settingsPanel" hidden>
         <h3>Settings</h3>
         <label class="setting-row">Default video quality
@@ -90,9 +90,11 @@
       </div>
     </div>
   </header>
+  <div id="scrim"></div>
 
   <div id="layout">
     <aside id="sidebar">
+      <button id="drawerClose" class="side-item" title="Close menu"><span class="side-ico"><svg class="icon"><use href="#i-x"></use></svg></span> Close</button>
       <nav class="side-group">
         <button class="side-item" data-nav="home"><span class="side-ico"><svg class="icon"><use href="#i-home"></use></svg></span> Home</button>
         <button class="side-item" data-nav="browse"><span class="side-ico"><svg class="icon"><use href="#i-grid"></use></svg></span> Browse</button>
