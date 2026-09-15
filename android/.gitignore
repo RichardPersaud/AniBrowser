@@ -1,0 +1,8 @@
+app/src/main/jniLibs/
+app/src/main/cpp/include/
+app/src/main/assets/nodejs-project/
+app/keystore.properties
+*.keystore
+*.zip
+.gradle/
+build/
