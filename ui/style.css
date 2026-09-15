@@ -879,3 +879,125 @@ svg.icon {
   aspect-ratio: 16 / 9;
   display: block;
 }
+/* ================= mobile / touch (added for the Android build) =================
+   Everything above this line is the desktop layout; these blocks are additive.
+   Desktop (>820px) rendering is unchanged. Same tokens, same components. */
+
+/* ---- mobile-only chrome: never rendered on desktop ---- */
+#scrim { display: none; }
+#drawerClose { display: none; }
+
+/* dynamic-viewport height: identical to 100vh on desktop, correct under the
+   Android URL bar / soft keyboard */
+@supports (height: 100dvh) {
+  body { height: 100dvh; }
+}
+
+@media (max-width: 820px) {
+
+  /* ---- topbar: two rows; right cluster becomes icon-only ---- */
+  #topbar {
+    flex-wrap: wrap;
+    gap: 10px;
+    row-gap: 8px;
+    padding: 10px 12px;
+    position: relative;
+    z-index: 70;               /* stays above the scrim so search/bell/gear stay tappable */
+  }
+  #brand { font-size: 17px; margin-right: auto; }
+  #searchForm { order: 5; flex: 1 1 100%; max-width: none; margin: 0; }
+  #searchForm button { display: none; }        /* the soft keyboard's search key submits */
+  #searchInput { font-size: 16px; padding: 10px 12px; }   /* 16px: no focus zoom */
+  #settingsBtn { padding: 11px 12px; }
+  #settingsBtn .btn-label { display: none; }
+  #sidebarBtn, #notifBtn { padding: 11px 12px; min-width: 44px; min-height: 44px; }
+
+  /* ---- fixed-width panels become bottom sheets ---- */
+  #notifPanel, #settingsPanel {
+    position: fixed;
+    left: 8px; right: 8px; bottom: 8px; top: auto;
+    width: auto;
+    max-height: 72vh;
+    overflow-y: auto;
+    z-index: 90;
+  }
+  #suggestions { max-height: 45vh; }
+
+  /* ---- sidebar: overlay drawer (out of flow => #main keeps full width) ---- */
+  #scrim {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(4, 6, 10, 0.55);
+    z-index: 45;
+  }
+  #drawerClose { display: flex; }
+  #sidebar,
+  body:not(.sidebar-open) #sidebar {   /* restate the closed rule so this block wins */
+    position: fixed;
+    top: 0; bottom: 0; left: 0;
+    width: min(78vw, 280px);
+    padding: 14px 10px;
+    border-right: 1px solid var(--border);
+    overflow-y: auto;
+    z-index: 80;
+    transform: translateX(-102%);
+    transition: transform 0.22s ease;
+  }
+  body.sidebar-open #sidebar {
+    transform: translateX(0);
+    box-shadow: 12px 0 32px rgba(0, 0, 0, 0.45);
+  }
+
+  /* ---- sections / detail ---- */
+  section { padding: 14px 16px 20px; }   /* #playerView keeps its own padding: 0 */
+  #detailHead { gap: 16px; }
+  #detailPoster { width: 128px; }
+  #detailTitle { font-size: 22px; }
+  #detailControls { flex-wrap: wrap; gap: 10px; }
+  #detailInfo { padding: 12px 14px; }
+  #browseFilters { gap: 8px; }
+  .bf { flex: 1 1 30%; }
+  .bf select { min-width: 0; max-width: none; width: 100%; }
+  #browsePager { flex-wrap: wrap; gap: 8px; }
+  #updateBanner { flex-wrap: wrap; }
+
+  /* ---- touch targets ---- */
+  .fav-btn { width: 40px; height: 40px; top: 6px; right: 6px; font-size: 16px; }
+  .fav-btn.remove-btn { right: 52px; }
+  .alpha-btn, .page-btn { min-width: 38px; padding: 9px 10px; font-size: 13px; }
+  .chip { padding: 7px 12px; font-size: 12px; }
+  .ep-btn { padding: 12px 4px; font-size: 14px; }
+  .side-item { padding: 14px 12px; font-size: 15px; }
+  .pill-btn, #moreBtn { padding: 10px 16px; font-size: 14px; }
+  .sug-item { padding: 10px 12px; font-size: 14px; }
+  .notif-item { padding: 11px 12px; }
+  .back-btn { padding: 10px 14px; font-size: 14px; }
+  .setting-row select { font-size: 14px; padding: 9px 10px; }
+
+  /* ---- player: overlay bars reachable on touch ---- */
+  #playerWrap { touch-action: manipulation; }   /* no double-tap zoom; dblclick still fires */
+  #playerTop { padding: 10px 12px; }
+  #playerBottom { bottom: 64px; padding: 10px 12px; flex-wrap: wrap; }  /* above native controls */
+  #playerBottom .pill-btn { padding: 11px 14px; }
+  #playerRight { gap: 8px; }
+  #qualitySel { padding: 9px 10px; font-size: 13px; }
+  .overlay-btn { right: 10px; bottom: 88px; padding: 11px 18px; }       /* skip intro */
+}
+
+@media (max-width: 480px) {
+  section { padding: 12px 12px 20px; }
+  h2 { font-size: 15px; }
+  .grid { grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 10px; }
+  .grid.small { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
+  .card .card-title { font-size: 12px; }
+  #detailHead { gap: 14px; }
+  #detailPoster { width: 110px; }
+  #detailTitle { font-size: 20px; }
+  .segmented button { padding: 9px 14px; font-size: 13px; }
+  .meta-row { flex-wrap: wrap; }
+  .meta-key { width: 74px; }
+  .bf { flex: 1 1 42%; }
+  #miniPlayer { left: 8px; right: 8px; bottom: 8px; width: auto; }
+  #toast { max-width: calc(100vw - 24px); }
+}
