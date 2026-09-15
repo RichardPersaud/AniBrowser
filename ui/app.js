@@ -332,6 +332,7 @@ function showView(name) {
   for (const v of ['homeView', 'browseView', 'favView', 'detailView', 'playerView']) {
     $(v).hidden = v !== name;
   }
+  $('playerWrap').classList.remove('show-bars');   // touch-only class; no-op on desktop
   const navKey = name === 'favView' ? 'favorites'
     : name === 'browseView' ? 'browse'
     : name === 'homeView' ? 'home' : null;
@@ -625,17 +626,31 @@ function browseByGenre(slug) {
 
 /* ---------------- home / search ---------------- */
 
-/* --- sidebar --- */
-let sidebarOpen = prefs().sidebarOpen !== false;
-function applySidebar() {
+/* --- mobile helpers --- */
+const mqMobile = window.matchMedia('(max-width: 820px)');
+
+/* --- sidebar ---
+   Default open on desktop, closed on phones (overlay drawer). Persistence is
+   desktop-only: a phone never writes sidebarOpen, so a desktop-set `true`
+   can't force the drawer open on a narrow screen. */
+let sidebarOpen = mqMobile.matches ? false : prefs().sidebarOpen !== false;
+function applySidebar(persist = true) {
   document.body.classList.toggle('sidebar-open', sidebarOpen);
-  const p = prefs();
-  p.sidebarOpen = sidebarOpen;
-  setPrefs(p);
+  if (!mqMobile.matches && persist) {
+    const p = prefs();
+    p.sidebarOpen = sidebarOpen;
+    setPrefs(p);
+  }
 }
 $('sidebarBtn').addEventListener('click', () => {
   sidebarOpen = !sidebarOpen;
   applySidebar();
+});
+$('drawerClose').addEventListener('click', () => { sidebarOpen = false; applySidebar(false); });
+$('scrim').addEventListener('click', () => { sidebarOpen = false; applySidebar(false); });
+mqMobile.addEventListener?.('change', () => {
+  sidebarOpen = mqMobile.matches ? false : prefs().sidebarOpen !== false;
+  applySidebar(false);
 });
 
 function navHome() {
@@ -677,6 +692,30 @@ $('miniExpand').addEventListener('click', () => {
 });
 $('miniClose').addEventListener('click', () => stopPlayback());
 
+/* --- touch: tap the video area to reveal the overlay bars; double-tap = fullscreen --- */
+{
+  const wrap = $('playerWrap');
+  let barsTimer = null;
+  wrap.addEventListener('click', (e) => {
+    if (!mqMobile.matches) return;                        // desktop keeps hover-reveal
+    if (e.target.closest('button, select, input, a')) return;
+    const now = Date.now();
+    const dbl = now - (wrap._lastTap || 0) < 300;
+    wrap._lastTap = now;
+    if (dbl) {
+      clearTimeout(barsTimer);
+      wrap.classList.remove('show-bars');
+      document.fullscreenElement ? document.exitFullscreen() : wrap.requestFullscreen();
+      return;
+    }
+    wrap.classList.toggle('show-bars');
+    clearTimeout(barsTimer);
+    if (wrap.classList.contains('show-bars')) {
+      barsTimer = setTimeout(() => wrap.classList.remove('show-bars'), 3500);
+    }
+  });
+}
+
 async function sidebarNav(target) {
   if (state.view === 'playerView') {
     // keep the video running in the docked mini player while browsing
@@ -696,7 +735,10 @@ async function sidebarNav(target) {
 }
 
 document.querySelectorAll('.side-item').forEach((b) => {
-  b.addEventListener('click', () => sidebarNav(b.dataset.nav));
+  b.addEventListener('click', () => {
+    if (mqMobile.matches) { sidebarOpen = false; applySidebar(false); } // close the drawer on navigate
+    sidebarNav(b.dataset.nav);
+  });
 });
 
 $('searchForm').addEventListener('submit', (e) => {
