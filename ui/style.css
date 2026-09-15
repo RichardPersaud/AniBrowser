@@ -112,6 +112,19 @@ body {
   cursor: pointer;
 }
 #searchForm button:hover { background: var(--accent-dim); color: #fff; }
+/* mobile-only: the topbar form collapses into a popup behind this icon */
+#searchBtn {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--muted);
+  cursor: pointer;
+  padding: 9px 11px;
+}
+#searchBtn:hover { color: var(--text); border-color: var(--accent-dim); }
 
 #topbar-right { position: relative; display: flex; align-items: center; gap: 10px; }
 
@@ -274,27 +287,35 @@ body {
 .update-row span { font-size: 12px; color: var(--muted); }
 #favEmpty p { margin: 8px 0; }
 
-/* ---- layout: sidebar + main ---- */
+/* ---- layout: sidebar + main ----
+   The sidebar is an overlay: it slides over the main content instead of
+   squeezing it, so opening/closing never reflows the grid underneath. */
 #layout {
   flex: 1;
   display: flex;
   min-height: 0;
+  position: relative;
 }
 #sidebar {
   width: 190px;
-  flex-shrink: 0;
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 25;
   overflow: hidden;
   display: flex;
   flex-direction: column;
   background: var(--bg2);
   border-right: 1px solid var(--border);
   padding: 14px 10px;
-  transition: width 0.18s ease, padding 0.18s ease;
+  box-shadow: 12px 0 28px rgba(0, 0, 0, 0.45);
+  transition: transform 0.18s ease;
 }
 body:not(.sidebar-open) #sidebar {
-  width: 0;
-  padding: 14px 0;
+  transform: translateX(-100%);
   border-right-color: transparent;
+  box-shadow: none;
 }
 
 .side-group { display: flex; flex-direction: column; gap: 4px; }
@@ -513,6 +534,16 @@ h2 { font-size: 16px; margin: 18px 0 12px; color: var(--muted); font-weight: 600
 }
 .alpha-btn:hover { color: var(--text); border-color: var(--accent-dim); }
 .alpha-btn.active { background: var(--accent); color: #06231f; border-color: var(--accent); }
+
+/* mobile-only: collapses #browseFilters into a dropdown panel */
+#bfToggle {
+  display: none;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 12px;
+}
+#bfToggle .icon { width: 15px; height: 15px; }
+#bfToggle.open { background: var(--accent-dim); color: #fff; }
 
 #browseFilters {
   display: flex;
@@ -736,6 +767,17 @@ h2 { font-size: 16px; margin: 18px 0 12px; color: var(--muted); font-weight: 600
 #playerWrap:hover #playerBottom,
 #playerWrap.show-bars #playerTop,
 #playerWrap.show-bars #playerBottom { opacity: 1; }
+
+/* ---- system picture-in-picture ----
+   The shell restores the full player and sets body.pip-full right before the
+   floating window starts mirroring the app — strip every piece of chrome so
+   the window shows only the video. */
+body.pip-full #topbar,
+body.pip-full #sidebar,
+body.pip-full #playerTop,
+body.pip-full #playerBottom {
+  display: none !important;
+}
 #playerTitle {
   flex: 1;
   font-weight: 600;
@@ -835,6 +877,48 @@ svg.icon {
 }
 #toast.err { border-color: var(--danger); }
 
+/* ---- mobile popup search (the topbar form reparents into #searchMount) ---- */
+#searchOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  background: rgba(4, 6, 10, 0.72);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 52px 12px 12px;
+}
+/* display:flex above beats the [hidden] attribute — keep it honest */
+#searchOverlay[hidden] { display: none; }
+#searchPanel {
+  position: relative;
+  width: 100%;
+  max-width: 520px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
+}
+/* the reparented form fills the panel */
+#searchMount #searchForm { margin: 0; max-width: none; }
+#searchOverlayClose {
+  position: absolute;
+  top: -12px;
+  right: -6px;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+#searchOverlayClose .icon { width: 15px; height: 15px; }
+
 /* ---- in-window mini player (docked bottom-right while browsing) ---- */
 #miniPlayer {
   position: fixed;
@@ -855,6 +939,9 @@ svg.icon {
   gap: 8px;
   padding: 6px 10px;
   background: var(--bg2);
+  cursor: move;
+  touch-action: none; /* the bar is the drag handle — don't scroll from it */
+  user-select: none;
 }
 #miniTitle {
   flex: 1;
@@ -1000,4 +1087,69 @@ svg.icon {
   .bf { flex: 1 1 42%; }
   #miniPlayer { left: 8px; right: 8px; bottom: 8px; width: auto; }
   #toast { max-width: calc(100vw - 24px); }
+}
+
+/* ---- narrow (phone) viewport ----
+   On a phone the topbar's min-content width (icon + brand + Search button +
+   "Settings" text) exceeds the ~427px layout viewport, which makes Chromium
+   expand the layout and shrink-zoom the whole page ~12% (clipping the navbar).
+   Keep the bar icon-only and tight so it fits at 1:1. */
+@media (max-width: 540px) {
+  #topbar { gap: 10px; padding: 10px 12px; }
+  /* the search bar hides behind the magnifying-glass icon on phones, so nothing
+     pushes the icon cluster right — anchor it to the right edge */
+  #topbar-right { margin-left: auto; }
+  /* dropdown panels: anchor to the viewport — the bell/settings icons sit
+     mid-screen on phones, so their right-anchored 300/280px panels would hang
+     off the left edge */
+  #notifPanel,
+  #settingsPanel {
+    position: fixed;
+    top: 64px;
+    left: 10px;
+    right: 10px;
+    width: auto;
+  }
+  #settingsBtn .btn-label { display: none; }
+  #settingsBtn { padding: 9px 11px; }
+  #searchForm button { padding: 9px 12px; }
+  section { padding: 14px 12px; }
+
+  /* search: hide the topbar bar, show the magnifying-glass icon; JS reparents
+     the form into the popup panel when the icon is tapped */
+  #searchForm { display: none; }
+  #searchBtn { display: flex; }
+  /* the reparented form must stay visible inside the popup */
+  #searchMount #searchForm { display: flex; }
+
+  /* in-window mini player: narrower and tucked closer to the corner */
+  #miniPlayer { right: 10px; bottom: 10px; width: 220px; }
+
+  /* browse filters collapse behind the Filters pill */
+  #bfToggle { display: inline-flex; }
+  #browseFilters { display: none; }
+  body.filters-open #browseFilters {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+  }
+  body.filters-open .bf select { max-width: none; width: 100%; }
+
+  /* alpha bar scrolls sideways instead of stacking tall */
+  #alphaBar { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 4px; }
+
+  /* pagination: Prev | pages | Next on one row, "Page x of y" underneath */
+  #browsePager { flex-wrap: wrap; gap: 8px; }
+  #browsePrev { order: 0; }
+  #browsePages { order: 1; flex: 1; }
+  #browseNext { order: 2; }
+  #browsePageLabel { order: 3; flex-basis: 100%; text-align: center; }
+  .page-btn { min-width: 28px; padding: 5px 7px; }
+
+  /* detail page: smaller poster, wrapping controls, tighter title */
+  #detailHead { gap: 12px; }
+  #detailPoster { width: 104px; }
+  #detailTitle { font-size: 19px; }
+  #detailControls { flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+  #detailInfo { margin-top: 8px; }
 }

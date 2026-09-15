@@ -1,0 +1,23 @@
+// New-style Expo SDK 57 local module: `expo-module-gradle-plugin` brings in
+// kotlin-android, the pika compiler plugin (required — core's inline
+// Function/AsyncFunction bodies call pika's reified typeDescriptorOf, and without
+// the plugin those calls compile to a runtime-throwing reifiedOperationMarker
+// stub), expo-modules-core as compileOnly, and default SDK versions.
+apply plugin: 'com.android.library'
+apply plugin: 'expo-module-gradle-plugin'
+
+group = 'io.local.anibrowser'
+version = '1.0.0'
+
+// Kotlin-only: the JNI shim (libanibrowser.so) and libnode.so ship as prebuilt
+// jniLibs extracted from the released APK — no NDK/CMake needed to build this.
+android {
+  namespace "io.local.anibrowser"
+  defaultConfig {
+    versionCode 1
+    versionName "1.0.0"
+    ndk {
+      abiFilters.addAll(((String) (project.findProperty("reactNativeArchitectures") ?: "armeabi-v7a,arm64-v8a,x86_64")).split(","))
+    }
+  }
+}

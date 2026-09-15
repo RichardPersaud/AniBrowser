@@ -13,6 +13,13 @@ const el = (tag, cls, text) => {
 // outline SVG icon from the sprite in index.html (colors flow via currentColor)
 const icon = (name) => `<svg class="icon" aria-hidden="true"><use href="#i-${name}"></use></svg>`;
 
+// phone-sized viewport: drives the mobile-only behaviors (popup search,
+// collapsible browse filters, sidebar auto-close, no mini player — the
+// Android shell handles background playback via picture-in-picture instead)
+const IS_MOBILE = window.matchMedia('(max-width: 540px)').matches;
+// the Android app's WebView identifies itself with "Android" in the UA
+const IS_ANDROID = /Android/i.test(navigator.userAgent);
+
 const state = {
   query: '',
   page: 1,
@@ -259,7 +266,18 @@ async function checkFavEpisodes() {
     p.notifActive = active;
     setPrefs(p);
     renderNotifPanel();
-    for (const n of fresh) toast(`${n.title}: ${n.newCount} new episode${n.newCount === 1 ? '' : 's'}!`);
+    for (const n of fresh) {
+      toast(`${n.title}: ${n.newCount} new episode${n.newCount === 1 ? '' : 's'}!`);
+      // Android shell mirrors fresh favorites updates into system notifications
+      // (the "Favorite update alerts" settings row turns this off)
+      if (IS_ANDROID && prefs().pushNotifs !== false && window.ReactNativeWebView) {
+        window.ReactNativeWebView.postMessage(JSON.stringify({
+          type: 'notify',
+          title: n.title,
+          body: `${n.newCount} new episode${n.newCount === 1 ? '' : 's'} out (up to EP ${n.count})`,
+        }));
+      }
+    }
   } catch { /* poll is best-effort; the next tick retries */ }
   finally { checkingFavs = false; }
 }
@@ -382,6 +400,7 @@ function renderSuggestions(items) {
     row.addEventListener('mousedown', (e) => {
       e.preventDefault(); // keep input focus handling predictable
       hideSuggestions();
+      if (IS_MOBILE) closeSearchOverlay();
       openDetail(r.slug, r.title, r.poster);
     });
     box.appendChild(row);
@@ -426,16 +445,44 @@ $('searchInput').addEventListener('keydown', (e) => {
     e.preventDefault();
     const r = sugState.items[sugState.hl];
     hideSuggestions();
+    if (IS_MOBILE) closeSearchOverlay();
     openDetail(r.slug, r.title, r.poster);
   }
 });
 
+/* --- mobile popup search ---
+   The topbar search input is too cramped on a phone, so the search moves
+   behind a magnifying-glass icon: tapping opens a full-width overlay and the
+   existing #searchForm is reparented into it (reparenting keeps every input /
+   suggestions listener working unchanged). Desktop never opens the overlay. */
+function closeSearchOverlay() {
+  $('searchOverlay').hidden = true;
+  hideSuggestions();
+}
+
+if (IS_MOBILE) {
+  $('searchBtn').addEventListener('click', () => {
+    $('searchMount').appendChild($('searchForm'));
+    $('searchOverlay').hidden = false;
+    $('searchInput').focus();
+  });
+  $('searchOverlayClose').addEventListener('click', closeSearchOverlay);
+  // tapping the dim backdrop closes it; taps inside the panel don't
+  $('searchOverlay').addEventListener('click', (e) => {
+    if (e.target === $('searchOverlay')) closeSearchOverlay();
+  });
+  // submitting a search or picking a suggestion should land on the results
+  $('searchForm').addEventListener('submit', closeSearchOverlay);
+}
+
 /* ---------------- browse all ---------------- */
 
 // clickable page list with ellipsis, e.g. 1 … 4 5 [6] 7 8 … 340
+// (phones get a ±1 window so the row always fits without wrapping)
 function pageList(page, total) {
+  const span = IS_MOBILE ? 1 : 2;
   const win = [];
-  for (let p = Math.max(1, page - 2); p <= Math.min(total, page + 2); p++) win.push(p);
+  for (let p = Math.max(1, page - span); p <= Math.min(total, page + span); p++) win.push(p);
   const set = [...new Set([1, ...win, total])].sort((a, b) => a - b);
   const out = [];
   let prev = 0;
@@ -560,6 +607,14 @@ function initBrowseUI() {
     loadBrowse();
   });
 
+  // mobile: the filter row lives behind a collapsible panel
+  if (IS_MOBILE) {
+    $('bfToggle').addEventListener('click', () => {
+      const open = document.body.classList.toggle('filters-open');
+      $('bfToggle').classList.toggle('open', open);
+    });
+  }
+
   $('browsePrev').addEventListener('click', () => {
     if (browse.page > 1) { browse.page -= 1; loadBrowse(); }
   });
@@ -677,6 +732,19 @@ function restoreVideoToPlayer() {
   $('miniPlayer').hidden = true;
 }
 
+// the shell injects this right before the app is backgrounded — the system
+// picture-in-picture window mirrors the activity surface, so restore the full
+// player with all chrome stripped (body.pip-full) to make PiP video-only
+window.__pipRestore = function () {
+  const v = $('video');
+  if (state.view !== 'playerView' && videoActive()) {
+    restoreVideoToPlayer();
+    showView('playerView');
+    document.body.classList.add('pip-full');
+  }
+  if (v && !v.paused) v.play().catch(() => {}); // re-kick playback if needed
+};
+
 function minimizeToMini() {
   if (!videoActive()) return false;
   $('miniTitle').textContent = `${state.title} — EP ${state.epNum} (${state.type.toUpperCase()})`;
@@ -716,9 +784,45 @@ $('miniClose').addEventListener('click', () => stopPlayback());
   });
 }
 
+// drag the mini player anywhere by its title bar (mouse + touch via pointer
+// events), clamped to the viewport
+(() => {
+  const el = $('miniPlayer');
+  const bar = $('miniBar');
+  let dragging = false, sx = 0, sy = 0, ox = 0, oy = 0;
+
+  const clamp = (x, y) => {
+    const w = el.offsetWidth, h = el.offsetHeight;
+    el.style.left = Math.min(Math.max(4, x), window.innerWidth - w - 4) + 'px';
+    el.style.top = Math.min(Math.max(4, y), window.innerHeight - h - 4) + 'px';
+  };
+
+  bar.addEventListener('pointerdown', (e) => {
+    if (e.target.closest('button')) return; // expand/close stay clickable
+    dragging = true;
+    try { bar.setPointerCapture(e.pointerId); } catch {}
+    const r = el.getBoundingClientRect();
+    sx = e.clientX; sy = e.clientY; ox = r.left; oy = r.top;
+    el.style.right = 'auto';
+    el.style.bottom = 'auto';
+  });
+  bar.addEventListener('pointermove', (e) => {
+    if (dragging) clamp(ox + e.clientX - sx, oy + e.clientY - sy);
+  });
+  const end = () => { dragging = false; };
+  bar.addEventListener('pointerup', end);
+  bar.addEventListener('pointercancel', end);
+})();
+
 async function sidebarNav(target) {
+  // on phones the sidebar covers content — every nav tap closes it again
+  if (IS_MOBILE) {
+    sidebarOpen = false;
+    applySidebar();
+  }
   if (state.view === 'playerView') {
-    // keep the video running in the docked mini player while browsing
+    // dock the video into the in-window mini player — playback survives the
+    // reparent, so browsing around never interrupts an episode
     if (!minimizeToMini()) {
       state.playId = (state.playId || 0) + 1; // cancel in-flight source resolution
       stopPlayback();
@@ -1413,6 +1517,15 @@ r18Sel.addEventListener('change', () => {
   }
 });
 
+const pushNotifSel = $('pushNotifSel');
+pushNotifSel.value = prefs().pushNotifs === false ? 'off' : 'on';
+pushNotifSel.addEventListener('change', () => {
+  const p = prefs();
+  p.pushNotifs = pushNotifSel.value === 'on';
+  setPrefs(p);
+  toast(p.pushNotifs ? 'Favorite update alerts on' : 'Favorite update alerts off');
+});
+
 /* keyboard */
 document.addEventListener('keydown', (e) => {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
@@ -1442,6 +1555,7 @@ async function loadVersion() {
 /* update banner + settings row; state comes from GET /api/update, actions via POST */
 let updateDismissed = false;
 let updateState = 'idle';
+let lastUpdate = null; // full status object (carries apkPath on Android)
 
 function renderUpdateUI(u) {
   updateState = u.disabled ? 'idle' : u.state;
@@ -1461,7 +1575,7 @@ function renderUpdateUI(u) {
       btn.hidden = true;
     } else if (u.state === 'ready') {
       $('updateText').textContent = `AniBrowser v${u.version} is ready to install.`;
-      btn.textContent = 'Restart to install';
+      btn.textContent = IS_ANDROID ? 'Install update' : 'Restart to install';
       btn.disabled = false;
     }
   }
@@ -1471,17 +1585,26 @@ function renderUpdateUI(u) {
   else if (u.state === 'idle') st.textContent = u.disabled ? 'Auto-update disabled (dev)' : 'Up to date';
   else if (u.state === 'available') st.textContent = `v${u.version} available`;
   else if (u.state === 'downloading') st.textContent = `Downloading… ${u.progress || 0}%`;
-  else if (u.state === 'ready') st.textContent = `v${u.version} downloaded — restart to install`;
+  else if (u.state === 'ready') st.textContent = IS_ANDROID
+    ? `v${u.version} downloaded — tap to install`
+    : `v${u.version} downloaded — restart to install`;
 }
 
 async function pollUpdate() {
   try {
     const u = await api('/api/update');
+    lastUpdate = u;
     renderUpdateUI(u);
   } catch { /* server hiccup; next poll retries */ }
 }
 
 $('updateAction').addEventListener('click', async () => {
+  if (updateState === 'ready' && IS_ANDROID) {
+    // hand the downloaded APK to the system installer via the Expo shell
+    if (!lastUpdate || !lastUpdate.apkPath) return toast('Update file missing — re-download', true);
+    window.location.href = `anibrowser-install://apk?path=${encodeURIComponent(lastUpdate.apkPath)}`;
+    return;
+  }
   const action = updateState === 'ready' ? 'install' : 'download';
   try {
     await api('/api/update', { action });
@@ -1511,7 +1634,10 @@ function hideSplash() {
   splashGone = true;
   const s = $('bootSplash');
   s.classList.add('gone');
-  setTimeout(() => { s.hidden = true; }, 350);
+  // remove the element entirely: `hidden` can't override #bootSplash's ID-level
+  // display:flex, and on Android's WebView the leftover full-screen layer froze
+  // mid-fade as a permanent dim veil that blocked repaints until a scroll
+  setTimeout(() => s.remove(), 400);
 }
 
 (async () => {
