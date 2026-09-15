@@ -720,6 +720,7 @@ async function loadResults(append) {
   $('loadingState').hidden = true;
   $('resultsSection').hidden = false;
   $('recentSection').hidden = true; // search results take over the home view
+  $('continueSection').hidden = true; // ...and so do the continue-watching cards
   $('emptyState').hidden = true;
   $('moreBtn').hidden = true;
   if (!append) renderSkeletonCards($('resultsGrid'), 12);
@@ -930,8 +931,46 @@ async function loadDetailInfo() {
   const slug = state.slug;
   try {
     const d = await api(`/api/detail?slug=${encodeURIComponent(slug)}`);
-    if (state.slug === slug) renderDetailInfo(d);
+    if (state.slug === slug) {
+      renderDetailInfo(d);
+      renderRecommendations(d);
+    }
   } catch { /* details are best-effort */ }
+}
+
+// up to 5 similar shows, picked by the show's own genres (primary genre first,
+// secondary genre fills any gap). Sorted by most-watched within that genre —
+// trending/mal_score return niche catalog picks; most_viewed is recognizable.
+let recSeq = 0;
+async function renderRecommendations(d) {
+  const seq = ++recSeq;
+  const section = $('recSection');
+  section.hidden = true;
+  const slugs = (d.genreSlugs || []).filter((g) => GENRES.includes(g));
+  if (!slugs.length) return;
+  const picked = [];
+  const seen = new Set([state.slug]);
+  const take = (results) => {
+    for (const r of results.filter(r18Visible)) {
+      if (picked.length >= 5) break;
+      if (seen.has(r.slug)) continue;
+      seen.add(r.slug);
+      picked.push(r);
+    }
+  };
+  for (const g of slugs.slice(0, 2)) {
+    if (picked.length >= 5) break;
+    try {
+      const { results } = await api(`/api/browse?genre=${encodeURIComponent(g)}&sort=most_viewed&page=1`);
+      if (seq !== recSeq || state.view !== 'detailView') return; // user moved on
+      take(results);
+    } catch { /* best-effort */ }
+  }
+  if (seq !== recSeq || state.view !== 'detailView' || !picked.length) return;
+  const grid = $('recGrid');
+  grid.innerHTML = '';
+  for (const r of picked) grid.appendChild(makeCard(r));
+  section.hidden = false;
 }
 
 function updateDetailFav() {
@@ -959,6 +998,7 @@ async function openDetail(slug, title, poster, onReady) {
   $('detailPoster').src = poster || '';
   updateDetailFav();
   renderDetailInfo(null); // hide stale info while loading
+  $('recSection').hidden = true; // ...and stale recommendations
   loadDetailInfo();
   $('epCount').textContent = '';
   // remember the origin for the detail "Back" button — set here (the only
