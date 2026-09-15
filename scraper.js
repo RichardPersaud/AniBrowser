@@ -12,6 +12,26 @@ const XOR_KEY = 'otaku-embed-v1';
 const epListCache = new Map(); // numId -> { t, eps }
 const CACHE_TTL = 5 * 60 * 1000;
 
+// epIds where every embed was unresolvable — the source site no longer hosts
+// that episode. Lets the UI mark them in the episode list instead of making
+// the user click into a certain failure again.
+const deadEps = new Map(); // epId -> t
+const DEAD_TTL = 30 * 60 * 1000;
+
+function noteDeadEp(epId) {
+  deadEps.set(epId, Date.now());
+}
+
+function isDeadEp(epId) {
+  const t = deadEps.get(epId);
+  if (!t) return false;
+  if (Date.now() - t > DEAD_TTL) {
+    deadEps.delete(epId);
+    return false;
+  }
+  return true;
+}
+
 async function get(url, opts = {}) {
   const headers = { 'User-Agent': UA };
   if (opts.referer) headers.Referer = opts.referer;
@@ -54,6 +74,8 @@ function parseFilmList(html) {
       slug: m[1],
       title: decodeEntities(m[2]),
       poster: img ? img[1] : null,
+      // adult shows carry an 18+ tick on their card — feeds the R-content toggle
+      r18: !!b.match(/tick tick-rate">18\+</),
     });
   }
   return results;
@@ -77,7 +99,7 @@ function parseTotalPages(html) {
 }
 
 // opts.letter: 'all' | '0-9' | 'other' | 'a'..'z'  ->  /az-list/<letter>
-// otherwise opts.{type,status,rating,score,season,language,sort,genres} -> /filter
+// otherwise opts.{type,status,rating,score,season,language,sort,genre} -> /filter
 // returns { results, totalPages, page }
 async function browse(opts = {}) {
   const page = Math.max(1, parseInt(opts.page, 10) || 1);
@@ -87,7 +109,9 @@ async function browse(opts = {}) {
     if (page > 1) url += `?page=${page}`;
   } else {
     const p = new URLSearchParams();
-    for (const k of ['type', 'status', 'rating', 'score', 'season', 'language', 'sort', 'genres']) {
+    // the site's filter form uses singular `genre` now (verified against the
+    // live form + results); `genres` used to be plural and is ignored today
+    for (const k of ['type', 'status', 'rating', 'score', 'season', 'language', 'sort', 'genre']) {
       if (opts[k]) p.set(k, opts[k]);
     }
     p.set('page', String(page));
@@ -301,11 +325,16 @@ async function getSources(slug, epNum, type = 'sub') {
   const src = (await tryType(type)) || (await tryType(other));
   if (src) return src;
 
+  noteDeadEp(ep.epId);
   const err = new Error(
-    `No playable source found for episode ${epNum} (tried ${type} and ${other})`
+    `Episode ${epNum} is not available at the source right now ` +
+      `(tried ${type} and ${other} — the embeds are dead or removed)`
   );
   err.fallbackType = other;
   throw err;
 }
 
-module.exports = { UA, BASE, search, recentlyUpdated, browse, details, episodes, getSources };
+module.exports = {
+  UA, BASE, search, recentlyUpdated, browse, details, episodes, getSources,
+  isDeadEp,
+};

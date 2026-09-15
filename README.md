@@ -61,7 +61,12 @@ installer once:
    every 10 minutes; "Mark all seen" dismisses them. Notification state is
    saved with the backup.
 10. App version shows in Settings and at the bottom of the sidebar
-11. Settings, favorites and watch history are mirrored to
+11. Settings toggle: **R-rated content (18+)** — Hide (default) removes 18+
+   titles from Home, Search and Browse (they're marked `18+` on the source's
+   cards); Show restores them
+12. Episodes whose embeds are all dead at the source are crossed out in the
+   episode list after one failed attempt — the error message also says so
+13. Settings, favorites and watch history are mirrored to
    `Documents\AniBrowser\anibrowser-data.json` (falls back to
    `%USERPROFILE%\AniBrowser` if Documents is OneDrive-synced and stalls)
    so updates and reinstalls don't reset them

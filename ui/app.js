@@ -52,6 +52,11 @@ function setPrefs(p) {
   localStorage.setItem(PREFS_KEY, JSON.stringify(p));
   scheduleBackup();
 }
+// 18+ shows carry an r18 flag from the source's card markup; the settings
+// toggle (default: hide) filters them out of Home, Search and Browse
+function r18Visible(r) {
+  return !!prefs().showR18 || !r.r18;
+}
 
 /* ---------------- favorites ---------------- */
 
@@ -324,13 +329,6 @@ function toast(msg, isErr = false) {
 }
 
 function showView(name) {
-  // remember where the user came from, for the detail "Back" button.
-  // only on entering the *detail* view: returning from the player to a detail
-  // page must not overwrite the original origin (e.g. Browse) or Back would
-  // wrongly fall through to Home
-  if (name === 'detailView' && state.view !== 'detailView') {
-    state.prevView = state.view;
-  }
   for (const v of ['homeView', 'browseView', 'favView', 'detailView', 'playerView']) {
     $(v).hidden = v !== name;
   }
@@ -500,9 +498,10 @@ const FILTER_OPTIONS = {
 
 const browse = { mode: 'letter', letter: 'all', page: 1, totalPages: 1, seq: 0 };
 const bfSelects = ['Type', 'Status', 'Genre', 'Rating', 'Score', 'Season', 'Language', 'Sort'];
-// select suffix -> query param (site filter page uses `genres`, not `genre`)
+// select suffix -> query param (the site's filter form uses singular `genre`;
+// `genres` used to work but is ignored by the backend today)
 const bfParams = {
-  Type: 'type', Status: 'status', Genre: 'genres', Rating: 'rating',
+  Type: 'type', Status: 'status', Genre: 'genre', Rating: 'rating',
   Score: 'score', Season: 'season', Language: 'language', Sort: 'sort',
 };
 
@@ -595,7 +594,7 @@ async function loadBrowse() {
     browse.totalPages = totalPages;
     const grid = $('browseGrid');
     grid.innerHTML = ''; // drop the skeleton placeholders
-    for (const r of results) grid.appendChild(makeCard(r));
+    for (const r of results.filter(r18Visible)) grid.appendChild(makeCard(r));
     $('browsePageLabel').textContent = totalPages > 1
       ? `Page ${page} of ${totalPages}`
       : 'Page 1';
@@ -729,7 +728,7 @@ async function loadResults(append) {
       `/api/search?q=${encodeURIComponent(state.query)}&page=${state.page}`
     );
     if (!append) $('resultsGrid').innerHTML = '';
-    for (const r of results) $('resultsGrid').appendChild(makeCard(r));
+    for (const r of results.filter(r18Visible)) $('resultsGrid').appendChild(makeCard(r));
     $('moreBtn').hidden = results.length === 0;
     if (!append && results.length === 0) {
       $('resultsTitle').textContent = 'No results found';
@@ -762,6 +761,7 @@ function renderSkeletonEps(grid, count) {
 
 function makeCard(r) {
   const card = el('div', 'card');
+  card.title = r.title; // native tooltip shows the full name over the clamped title
   const img = el('img');
   if (r.poster) {
     img.src = r.poster;
@@ -788,7 +788,7 @@ async function loadRecent() {
     $('recentLoading').hidden = true;
     const grid = $('recentGrid');
     grid.innerHTML = '';
-    for (const r of results.slice(0, 30)) grid.appendChild(makeCard(r));
+    for (const r of results.filter(r18Visible).slice(0, 30)) grid.appendChild(makeCard(r));
     state.recentLoaded = true;
   } catch {
     section.hidden = true; // best-effort: hide rather than break the home view
@@ -961,6 +961,11 @@ async function openDetail(slug, title, poster, onReady) {
   renderDetailInfo(null); // hide stale info while loading
   loadDetailInfo();
   $('epCount').textContent = '';
+  // remember the origin for the detail "Back" button — set here (the only
+  // place a *fresh* detail page opens), not in showView: hops like
+  // player→detail on playback error must not overwrite the real origin
+  // (e.g. Browse), or Back would wrongly fall through to Home
+  if (state.view !== 'detailView') state.prevView = state.view;
   showView('detailView');
   $('epLoading').hidden = true;
   renderSkeletonEps($('epGrid'), 12);
@@ -1001,6 +1006,11 @@ function renderEpisodes() {
       // already watched (before the resume point): check mark + dimmed style
       btn.classList.add('watched');
       btn.textContent = `✓ ${ep.num}`;
+    }
+    if (ep.dead) {
+      // every embed for this episode was dead — warn before the click, not after
+      btn.classList.add('dead');
+      btn.title = 'This episode is unavailable at the source (all embeds dead). Click to retry anyway.';
     }
     btn.addEventListener('click', () => startPlayback(ep.num, state.type));
     grid.appendChild(btn);
@@ -1113,7 +1123,10 @@ async function startPlayback(epNum, type) {
     } catch (e2) {
       if (state.playId !== playId) return;
       clearInterval(tick);
-      $('playerStatus').textContent = 'No sources found for this episode. ' + e2.message;
+      // the scraper's message already says sub+dub were tried and that the
+      // embeds are dead/removed — show it plainly instead of stacking text
+      $('playerStatus').textContent = e2.message;
+      $('playerStatus').textContent += ' — pick another episode or a different show.';
       toast(e2.message, true);
       return;
     }
@@ -1298,6 +1311,24 @@ defTypeSel.addEventListener('change', () => {
   setPrefs(p);
   state.type = defTypeSel.value;
   toast(`Default audio: ${defTypeSel.value.toUpperCase()}`);
+});
+
+const r18Sel = $('r18Sel');
+r18Sel.value = prefs().showR18 ? 'show' : 'hide';
+r18Sel.addEventListener('change', () => {
+  const p = prefs();
+  p.showR18 = r18Sel.value === 'show';
+  setPrefs(p);
+  const hidden = p.showR18 ? 'now shown' : 'now hidden';
+  toast(`18+ content ${hidden} — refreshing this view`);
+  // re-apply to whatever is on screen right now
+  if (state.view === 'browseView') loadBrowse();
+  else if (state.view === 'favView') { /* favorites keep showing what you saved */ }
+  else {
+    // home view: redo the current content (search results or recent cards)
+    if (!$('resultsSection').hidden && state.query) loadResults(false);
+    else loadRecent();
+  }
 });
 
 /* keyboard */

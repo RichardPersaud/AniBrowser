@@ -9,7 +9,13 @@ const os = require('os');
 const path = require('path');
 const { Readable, pipeline } = require('stream');
 const scraper = require('./scraper');
-const { updaterStatus, updaterAction } = require('./updater');
+// lazy: updater.js imports electron, so a plain `node server` (tests/probes)
+// must not load it until an /api/update call actually needs it
+let updater = null;
+function updaterMod() {
+  if (!updater) updater = require('./updater');
+  return updater;
+}
 const VERSION = require('./package.json').version;
 
 const UI_DIR = path.join(__dirname, 'ui');
@@ -282,7 +288,7 @@ async function route(req, res) {
     const opts = {};
     const letter = (q.get('letter') || '').toLowerCase();
     if (/^(all|0-9|other|[a-z])$/.test(letter)) opts.letter = letter;
-    for (const k of ['type', 'status', 'rating', 'score', 'season', 'language', 'sort', 'genres']) {
+    for (const k of ['type', 'status', 'rating', 'score', 'season', 'language', 'sort', 'genre']) {
       const v = q.get(k);
       if (v) opts[k] = v;
     }
@@ -317,6 +323,7 @@ async function route(req, res) {
   }
 
   if (p === '/api/update') {
+    const { updaterStatus, updaterAction } = updaterMod();
     if (req.method === 'POST') {
       let body = '';
       for await (const chunk of req) body += chunk;
@@ -333,6 +340,11 @@ async function route(req, res) {
 
   if (p === '/api/episodes') {
     const eps = await scraper.episodes(q.get('slug') || '');
+    // flag episodes known to be unresolvable (all embeds dead) so the UI can
+    // mark them in the list instead of a certain failure on click
+    for (const ep of eps) {
+      if (scraper.isDeadEp(ep.epId)) ep.dead = true;
+    }
     return sendJson(res, 200, { episodes: eps });
   }
 

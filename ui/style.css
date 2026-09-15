@@ -421,7 +421,11 @@ h2 { font-size: 16px; margin: 18px 0 12px; color: var(--muted); font-weight: 600
   padding: 8px 10px 10px;
   font-size: 13px;
   line-height: 1.35;
-  /* no line clamp: long titles wrap fully instead of being cut off */
+  /* clamp to 2 rows; hovering the card shows the full title as a tooltip */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 .card .resume-bar {
   height: 4px;
@@ -663,6 +667,11 @@ h2 { font-size: 16px; margin: 18px 0 12px; color: var(--muted); font-weight: 600
   text-align: center;
 }
 .ep-btn:hover { border-color: var(--accent); color: var(--accent); }
+.ep-btn.dead {
+  opacity: 0.45;
+  border-style: dotted;
+  text-decoration: line-through;
+}
 .ep-btn.watched {
   color: var(--muted);
   border-style: dashed;
