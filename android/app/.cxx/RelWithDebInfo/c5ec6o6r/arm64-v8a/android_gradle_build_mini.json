@@ -1,0 +1,29 @@
+{
+  "buildFiles": [
+    "/home/retro/src/AniBrowser/android/app/src/main/cpp/CMakeLists.txt"
+  ],
+  "cleanCommandsComponents": [
+    [
+      "/home/retro/android/cmake/3.22.1/bin/ninja",
+      "-C",
+      "/home/retro/src/AniBrowser/android/app/.cxx/RelWithDebInfo/c5ec6o6r/arm64-v8a",
+      "clean"
+    ]
+  ],
+  "buildTargetsCommandComponents": [
+    "/home/retro/android/cmake/3.22.1/bin/ninja",
+    "-C",
+    "/home/retro/src/AniBrowser/android/app/.cxx/RelWithDebInfo/c5ec6o6r/arm64-v8a",
+    "{LIST_OF_TARGETS_TO_BUILD}"
+  ],
+  "libraries": {
+    "anibrowser::@6890427a1f51a3e7e1df": {
+      "artifactName": "anibrowser",
+      "abi": "arm64-v8a",
+      "output": "/home/retro/src/AniBrowser/android/app/build/intermediates/cxx/RelWithDebInfo/c5ec6o6r/obj/arm64-v8a/libanibrowser.so",
+      "runtimeFiles": [
+        "/home/retro/src/AniBrowser/android/app/src/main/jniLibs/arm64-v8a/libnode.so"
+      ]
+    }
+  }
+}
