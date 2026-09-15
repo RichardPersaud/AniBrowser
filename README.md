@@ -99,6 +99,25 @@ electron-builder uploads a **draft** release containing the exe, blockmap and
 `PATCH /repos/RichardPersaud/AniBrowser/releases/<id> {"draft":false}` via
 API) — published releases are what installed apps pick up.
 
+**Before publishing, check the draft's assets** — the large exe upload has
+silently failed on this machine more than once (only the blockmap landed).
+If assets are missing, upload them by hand (PowerShell):
+
+```
+$rel = Invoke-RestMethod -Headers @{Authorization="Bearer $env:GH_TOKEN"} `
+  https://api.github.com/repos/RichardPersaud/AniBrowser/releases
+$rel = $rel | Where-Object { $_.tag_name -eq "v<version>" }
+Invoke-RestMethod -Method Post -Headers @{Authorization="Bearer $env:GH_TOKEN"} `
+  "$($rel.upload_url.Split('{')[0])?name=AniBrowser-Setup-x.y.z.exe" `
+  -ContentType application/octet-stream -InFile "dist/AniBrowser Setup x.y.z.exe"
+# same for latest.yml (ContentType text/plain) if missing
+Invoke-RestMethod -Method Patch -Headers @{Authorization="Bearer $env:GH_TOKEN"} `
+  -ContentType application/json -Body '{"draft":false}' $rel.url
+```
+
+A release without `latest.yml` (or the exe it points at) is invisible to
+installed apps.
+
 If sources break (they do, that's why ani-cli updates often), check the
 `scraper.js` regexes against the live site's markup.
 
