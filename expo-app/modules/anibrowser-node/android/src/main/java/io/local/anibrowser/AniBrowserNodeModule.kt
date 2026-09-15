@@ -1,5 +1,6 @@
 package io.local.anibrowser
 
+import io.local.anibrowser.node.R // module namespace — R lives one level down
 import android.Manifest
 import android.app.NotificationChannel
 import android.app.NotificationManager

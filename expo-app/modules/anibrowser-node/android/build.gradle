@@ -12,7 +12,10 @@ version = '1.0.0'
 // Kotlin-only: the JNI shim (libanibrowser.so) and libnode.so ship as prebuilt
 // jniLibs extracted from the released APK — no NDK/CMake needed to build this.
 android {
-  namespace "io.local.anibrowser"
+  // its own namespace (≠ the app's) so the generated BuildConfig lands in a
+  // different package — same-package BuildConfigs make release dex-merging
+  // fail with "duplicate class io.local.anibrowser.BuildConfig"
+  namespace "io.local.anibrowser.node"
   defaultConfig {
     versionCode 1
     versionName "1.0.0"
