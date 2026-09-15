@@ -1,7 +1,7 @@
 {
   "name": "anime-player",
   "productName": "AniBrowser",
-  "version": "1.0.14",
+  "version": "1.0.15",
   "description": "Personal anime browsing and streaming desktop app",
   "main": "main.js",
   "author": "richa <richa@localhost>",
@@ -10,15 +10,22 @@
   "scripts": {
     "start": "electron .",
     "dist": "electron-builder --win nsis",
-    "dist:linux": "electron-builder --linux AppImage deb"
+    "dist:linux": "electron-builder --linux AppImage deb",
+    "release": "electron-builder --win nsis -p always"
   },
   "build": {
     "appId": "io.local.anibrowser",
     "productName": "AniBrowser",
+    "publish": {
+      "provider": "github",
+      "owner": "RichardPersaud",
+      "repo": "AniBrowser"
+    },
     "files": [
       "main.js",
       "server.js",
       "scraper.js",
+      "updater.js",
       "ui/**/*",
       "package.json"
     ],
@@ -43,5 +50,8 @@
     "electron": "^44.3.0",
     "electron-builder": "^26.15.3",
     "ws": "^8.21.3"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.9"
   }
 }

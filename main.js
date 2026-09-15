@@ -3,6 +3,7 @@ const path = require('path');
 const os = require('os');
 const { app, BrowserWindow, Menu, shell } = require('electron');
 const { start } = require('./server');
+const { initUpdater } = require('./updater');
 
 app.setAppUserModelId('io.local.anibrowser');
 Menu.setApplicationMenu(null);
@@ -47,6 +48,7 @@ app.whenReady().then(async () => {
     dataDir = path.join(process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local', 'share'), 'AniBrowser');
   }
   const { port } = await start({ dataDir });
+  initUpdater();
   await createWindow(port);
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow(port);

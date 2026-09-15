@@ -10,6 +10,9 @@ const el = (tag, cls, text) => {
   return e;
 };
 
+// outline SVG icon from the sprite in index.html (colors flow via currentColor)
+const icon = (name) => `<svg class="icon" aria-hidden="true"><use href="#i-${name}"></use></svg>`;
+
 const state = {
   query: '',
   page: 1,
@@ -143,7 +146,8 @@ function updateFavCount() {
 
 // heart button overlaid on a poster card
 function attachFavBtn(card, r) {
-  const fav = el('button', 'fav-btn', '♥');
+  const fav = el('button', 'fav-btn');
+  fav.innerHTML = icon('heart');
   fav.title = isFav(r.slug) ? 'Remove from favorites' : 'Add to favorites';
   fav.classList.toggle('active', isFav(r.slug));
   fav.addEventListener('click', (e) => {
@@ -250,7 +254,7 @@ async function checkFavEpisodes() {
     p.notifActive = active;
     setPrefs(p);
     renderNotifPanel();
-    for (const n of fresh) toast(`🔔 ${n.title}: ${n.newCount} new episode${n.newCount === 1 ? '' : 's'}!`);
+    for (const n of fresh) toast(`${n.title}: ${n.newCount} new episode${n.newCount === 1 ? '' : 's'}!`);
   } catch { /* poll is best-effort; the next tick retries */ }
   finally { checkingFavs = false; }
 }
@@ -294,10 +298,13 @@ document.addEventListener('click', (e) => {
   if (!panel.hidden && !e.target.closest('#bellWrap')) panel.hidden = true;
 });
 
-async function api(path) {
+async function api(path, body) {
   let res;
+  const opts = body
+    ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(60000) }
+    : { signal: AbortSignal.timeout(60000) };
   try {
-    res = await fetch(path, { signal: AbortSignal.timeout(60000) });
+    res = await fetch(path, opts);
   } catch (e) {
     throw new Error(path.startsWith('/api/sources') ? 'Source lookup timed out or network hiccup — try again.' : e.message);
   }
@@ -317,8 +324,11 @@ function toast(msg, isErr = false) {
 }
 
 function showView(name) {
-  // remember where the user came from, for the detail "Back" button
-  if ((name === 'detailView' || name === 'playerView') && state.view !== 'detailView') {
+  // remember where the user came from, for the detail "Back" button.
+  // only on entering the *detail* view: returning from the player to a detail
+  // page must not overwrite the original origin (e.g. Browse) or Back would
+  // wrongly fall through to Home
+  if (name === 'detailView' && state.view !== 'detailView') {
     state.prevView = state.view;
   }
   for (const v of ['homeView', 'browseView', 'favView', 'detailView', 'playerView']) {
@@ -824,7 +834,8 @@ function renderContinue() {
     });
     attachFavBtn(card, it);
     // ✕ to drop this show from the watch history
-    const rm = el('button', 'fav-btn remove-btn', '✕');
+    const rm = el('button', 'fav-btn remove-btn');
+    rm.innerHTML = icon('x');
     rm.title = 'Remove from watch history';
     rm.addEventListener('click', (e) => {
       e.stopPropagation(); // don't open the card's detail view
@@ -1301,7 +1312,7 @@ document.addEventListener('keydown', (e) => {
   else if (e.code === 'KeyN') $('nextEpBtn').click();
 });
 
-/* ---------------- version ---------------- */
+/* ---------------- version + in-app updates ---------------- */
 
 async function loadVersion() {
   try {
@@ -1314,6 +1325,70 @@ async function loadVersion() {
     }
   } catch { /* cosmetic only */ }
 }
+
+/* update banner + settings row; state comes from GET /api/update, actions via POST */
+let updateDismissed = false;
+let updateState = 'idle';
+
+function renderUpdateUI(u) {
+  updateState = u.disabled ? 'idle' : u.state;
+  const banner = $('updateBanner');
+  const visible = !updateDismissed && ['available', 'downloading', 'ready'].includes(u.state);
+  banner.hidden = !visible;
+  if (visible) {
+    const btn = $('updateAction');
+    btn.hidden = false;
+    if (u.state === 'available') {
+      $('updateText').textContent = `AniBrowser v${u.version} is available.`;
+      btn.textContent = 'Download update';
+      btn.disabled = false;
+    } else if (u.state === 'downloading') {
+      $('updateText').innerHTML =
+        `Downloading v${u.version || ''}… <div class="u-progress"><div style="width:${u.progress || 0}%"></div></div>`;
+      btn.hidden = true;
+    } else if (u.state === 'ready') {
+      $('updateText').textContent = `AniBrowser v${u.version} is ready to install.`;
+      btn.textContent = 'Restart to install';
+      btn.disabled = false;
+    }
+  }
+  // settings row mirrors the state
+  const st = $('updateStatusText');
+  if (u.error) st.textContent = `Update check failed — will retry`;
+  else if (u.state === 'idle') st.textContent = u.disabled ? 'Auto-update disabled (dev)' : 'Up to date';
+  else if (u.state === 'available') st.textContent = `v${u.version} available`;
+  else if (u.state === 'downloading') st.textContent = `Downloading… ${u.progress || 0}%`;
+  else if (u.state === 'ready') st.textContent = `v${u.version} downloaded — restart to install`;
+}
+
+async function pollUpdate() {
+  try {
+    const u = await api('/api/update');
+    renderUpdateUI(u);
+  } catch { /* server hiccup; next poll retries */ }
+}
+
+$('updateAction').addEventListener('click', async () => {
+  const action = updateState === 'ready' ? 'install' : 'download';
+  try {
+    await api('/api/update', { action });
+  } catch (e) {
+    toast('Update failed: ' + e.message, true);
+  }
+});
+$('updateDismiss').addEventListener('click', () => {
+  updateDismissed = true;
+  renderUpdateUI({ state: updateState });
+});
+$('checkUpdateBtn').addEventListener('click', async () => {
+  $('updateStatusText').textContent = 'Checking…';
+  try {
+    await api('/api/update', { action: 'check' });
+  } catch (e) {
+    toast('Update check failed: ' + e.message, true);
+  }
+  pollUpdate();
+});
 
 /* ---------------- init ---------------- */
 
@@ -1341,4 +1416,6 @@ function hideSplash() {
   document.querySelector('.side-item[data-nav="home"]').classList.add('active');
   checkFavEpisodes(); // and every 10 minutes afterwards
   setInterval(checkFavEpisodes, 10 * 60 * 1000);
+  pollUpdate(); // in-app update banner; the main process checks for releases itself
+  setInterval(pollUpdate, 30 * 1000);
 })();
