@@ -1,0 +1,40 @@
+{
+  "buildFiles": [
+    "/home/retro/src/AniBrowser/android/app/src/main/cpp/CMakeLists.txt"
+  ],
+  "cleanCommandsComponents": [
+    [
+      "/home/retro/android/cmake/3.22.1/bin/ninja",
+      "-C",
+      "/home/retro/src/AniBrowser/android/app/.cxx/RelWithDebInfo/c5ec6o6r/x86_64",
+      "clean"
+    ]
+  ],
+  "buildTargetsCommandComponents": [
+    "/home/retro/android/cmake/3.22.1/bin/ninja",
+    "-C",
+    "/home/retro/src/AniBrowser/android/app/.cxx/RelWithDebInfo/c5ec6o6r/x86_64",
+    "{LIST_OF_TARGETS_TO_BUILD}"
+  ],
+  "libraries": {
+    "anibrowser::@6890427a1f51a3e7e1df": {
+      "toolchain": "toolchain",
+      "abi": "x86_64",
+      "artifactName": "anibrowser",
+      "output": "/home/retro/src/AniBrowser/android/app/build/intermediates/cxx/RelWithDebInfo/c5ec6o6r/obj/x86_64/libanibrowser.so",
+      "runtimeFiles": [
+        "/home/retro/src/AniBrowser/android/app/src/main/jniLibs/x86_64/libnode.so"
+      ]
+    }
+  },
+  "toolchains": {
+    "toolchain": {
+      "cCompilerExecutable": "/home/retro/android/ndk/27.1.12297006/toolchains/llvm/prebuilt/linux-x86_64/bin/clang.lld",
+      "cppCompilerExecutable": "/home/retro/android/ndk/27.1.12297006/toolchains/llvm/prebuilt/linux-x86_64/bin/clang++.lld"
+    }
+  },
+  "cFileExtensions": [],
+  "cppFileExtensions": [
+    "cpp"
+  ]
+}
