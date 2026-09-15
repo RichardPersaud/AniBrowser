@@ -236,6 +236,40 @@ body {
   color: var(--muted);
 }
 #favEmpty .empty-icon { font-size: 44px; color: var(--danger); opacity: 0.6; }
+
+/* ---- update banner / settings row ---- */
+#updateBanner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--bg3);
+  border: 1px solid var(--accent-dim);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  margin-bottom: 14px;
+  font-size: 13px;
+}
+#updateText { flex: 1; min-width: 0; }
+#updateText .u-progress {
+  height: 6px;
+  background: var(--bg2);
+  border-radius: 4px;
+  overflow: hidden;
+  margin-top: 6px;
+}
+#updateText .u-progress > div { height: 100%; background: var(--accent); }
+#updateAction { white-space: nowrap; }
+.update-x {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 4px 6px;
+}
+.update-x:hover { color: var(--text); }
+.update-row { display: flex; align-items: center; gap: 10px; margin-top: 4px; }
+.update-row span { font-size: 12px; color: var(--muted); }
 #favEmpty p { margin: 8px 0; }
 
 /* ---- layout: sidebar + main ---- */
@@ -387,10 +421,7 @@ h2 { font-size: 16px; margin: 18px 0 12px; color: var(--muted); font-weight: 600
   padding: 8px 10px 10px;
   font-size: 13px;
   line-height: 1.35;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
+  /* no line clamp: long titles wrap fully instead of being cut off */
 }
 .card .resume-bar {
   height: 4px;
@@ -748,6 +779,31 @@ video::cue { background: rgba(0, 0, 0, 0.4); }
 .boot-brand { font-size: 34px; font-weight: 800; letter-spacing: -0.5px; }
 .boot-brand span { color: var(--accent); }
 .boot-hint { font-size: 12px; color: var(--muted); margin-top: 2px; }
+
+/* ---- outline icons (inline SVG sprite) ---- */
+svg.icon {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  width: 1.1em;
+  height: 1.1em;
+  vertical-align: -0.18em;
+  flex-shrink: 0;
+}
+.fav-btn.active svg.icon { fill: currentColor; } /* filled heart when favorited */
+.empty-icon svg {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  width: 44px;
+  height: 44px;
+  opacity: 0.6;
+}
+.side-ico svg.icon { width: 16px; height: 16px; }
 
 /* ---- toast ---- */
 #toast {

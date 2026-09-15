@@ -9,7 +9,6 @@ Personal desktop app for browsing and streaming anime — a GUI equivalent of
 ## Install
 
 1. Go to the [Releases page](https://github.com/RichardPersaud/AniBrowser/releases)
-   — the repo is private, so sign in to GitHub first (or ask the owner for access)
 2. Under the latest release, download **AniBrowser.Setup.x.y.z.exe** from Assets
    (direct link for v1.0.13:
    [AniBrowser.Setup.1.0.13.exe](https://github.com/RichardPersaud/AniBrowser/releases/download/v1.0.13/AniBrowser.Setup.1.0.13.exe))
@@ -22,6 +21,20 @@ expected for a self-built app.
 Installers aren't committed to the repo because GitHub blocks files over
 100MB; every build ships as a release asset instead. Settings, favorites and
 watch history survive updates and reinstalls.
+
+### Auto-updates (from v1.0.15 on)
+
+Once installed, AniBrowser keeps itself up to date — you only ever run the
+installer once:
+
+- The app checks GitHub Releases on launch and every 6 hours.
+- When a new version is published, a banner appears at the top of the window:
+  **Download update** (progress bar) → **Restart to install**. The silent
+  installer replaces the app in place and relaunches it.
+- You can also check manually any time via **⚙ Settings → Updates → Check now**.
+- Update metadata (`latest.yml` + blockmap) is produced by electron-builder
+  and published with each release; `electron-updater`'s GitHub provider
+  handles version checks, downloads and the silent install.
 
 ## Use
 
@@ -70,7 +83,21 @@ Keyboard: `Space` play/pause · `←/→` seek 10s · `F` fullscreen · `N` next
 npm install
 npm start        # run in dev
 npm run dist     # produce dist/AniBrowser Setup x.y.z.exe
+npm run release  # build AND publish a draft GitHub release (needs GH_TOKEN)
 ```
+
+Releasing a new version (so installed apps auto-update):
+
+```
+# bump version in package.json first
+$env:GH_TOKEN = "<github PAT with repo scope>"   # PowerShell
+npm run release
+```
+
+electron-builder uploads a **draft** release containing the exe, blockmap and
+`latest.yml`. Publish the draft (GitHub web → Releases → Publish, or
+`PATCH /repos/RichardPersaud/AniBrowser/releases/<id> {"draft":false}` via
+API) — published releases are what installed apps pick up.
 
 If sources break (they do, that's why ani-cli updates often), check the
 `scraper.js` regexes against the live site's markup.

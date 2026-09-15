@@ -9,6 +9,7 @@ const os = require('os');
 const path = require('path');
 const { Readable, pipeline } = require('stream');
 const scraper = require('./scraper');
+const { updaterStatus, updaterAction } = require('./updater');
 const VERSION = require('./package.json').version;
 
 const UI_DIR = path.join(__dirname, 'ui');
@@ -313,6 +314,21 @@ async function route(req, res) {
   if (p === '/api/version') {
     await backupReady;
     return sendJson(res, 200, { version: VERSION, backupDir });
+  }
+
+  if (p === '/api/update') {
+    if (req.method === 'POST') {
+      let body = '';
+      for await (const chunk of req) body += chunk;
+      let action = '';
+      try { action = JSON.parse(body).action || ''; } catch { /* invalid body */ }
+      try {
+        return sendJson(res, 200, await updaterAction(action));
+      } catch (e) {
+        return sendJson(res, 400, { error: String(e.message || e), status: updaterStatus() });
+      }
+    }
+    return sendJson(res, 200, updaterStatus());
   }
 
   if (p === '/api/episodes') {
