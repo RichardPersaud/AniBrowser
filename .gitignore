@@ -7,5 +7,14 @@ dist/
 
 # scraped probe pages / local test artifacts
 probe/
+.probe-data/
 suggest.json
 smoke.log
+
+# local build artifacts (the installable APK ships via GitHub Releases instead)
+*.apk
+android/mobile-launch.png
+
+# expo app: local agent settings and gradle intermediates
+expo-app/.claude/
+expo-app/modules/**/android/build/

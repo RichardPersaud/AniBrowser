@@ -22,6 +22,8 @@
     <symbol id="i-chev-left" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></symbol>
     <symbol id="i-chev-right" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
     <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></symbol>
+    <symbol id="i-filter" viewBox="0 0 24 24"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></symbol>
   </svg>
   <div id="bootSplash">
     <div class="boot-brand">Ani<span>Browser</span></div>
@@ -39,6 +41,8 @@
       <button type="submit" title="Search">Search</button>
     </form>
     <div id="topbar-right">
+      <!-- mobile-only: opens the popup search (the topbar form reparents into it) -->
+      <button id="searchBtn" title="Search"><svg class="icon"><use href="#i-search"></use></svg></button>
       <div id="bellWrap">
         <button id="notifBtn" title="Notifications"><svg class="icon"><use href="#i-bell"></use></svg></button>
         <span id="notifBadge" hidden></span>
@@ -76,6 +80,13 @@
           </select>
         </label>
         <p class="hint">Applied to new episodes you play. "Hide" removes 18+ titles from Home, Search and Browse.</p>
+        <label class="setting-row">Favorite update alerts
+          <select id="pushNotifSel">
+            <option value="on">On — system notifications</option>
+            <option value="off">Off</option>
+          </select>
+        </label>
+        <p class="hint">System notifications on Android when a favorite gets new episodes. The bell above always works.</p>
         <hr class="setting-sep">
         <p class="hint" id="backupHint"></p>
         <hr class="setting-sep">
@@ -168,6 +179,7 @@
           <button id="bfReset" class="pill-btn" title="Clear all filters">Reset</button>
         </div>
         <div id="browseLoading" hidden><div class="spinner"></div></div>
+        <button id="bfToggle" class="pill-btn" title="Show / hide filters"><svg class="icon"><use href="#i-filter"></use></svg> Filters</button>
         <div id="browseGrid" class="grid"></div>
         <div id="browsePager">
           <button id="browsePrev" class="pill-btn"><svg class="icon"><use href="#i-chev-left"></use></svg> Prev</button>
@@ -246,6 +258,13 @@
     </main>
   </div>
 
+  <!-- mobile popup search: the topbar #searchForm is reparented into #searchMount -->
+  <div id="searchOverlay" hidden>
+    <div id="searchPanel">
+      <div id="searchMount"></div>
+      <button id="searchOverlayClose" title="Close search"><svg class="icon"><use href="#i-x"></use></svg></button>
+    </div>
+  </div>
   <div id="miniPlayer" hidden>
     <div id="miniBar">
       <span id="miniTitle"></span>

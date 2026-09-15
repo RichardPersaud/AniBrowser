@@ -14,10 +14,12 @@ process.on('unhandledRejection', (e) => {
 });
 
 const { start } = require('./server');
+const { initUpdater } = require('./updater');
 
 (async () => {
   // os.homedir() == the app's filesDir — set natively via registerNodeDataDirPath()
   const dataDir = path.join(os.homedir(), 'AniBrowser');
+  initUpdater(); // GitHub release check at +30s, then every 6h
   const { port } = await start({ dataDir });
   const marker = path.join(os.homedir(), 'anibrowser-port.json');
   const tmp = marker + '.tmp';
