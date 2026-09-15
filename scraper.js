@@ -243,7 +243,9 @@ async function pickEmbedUrls(epId, type, cap = 3) {
 }
 
 // Try one embed page; resolve to a source object or null if unusable.
-async function tryEmbed(embed) {
+// `requireM3u8`: first pass wants HLS (quality menu); second pass accepts any
+// playable src (e.g. mp4) — an episode without a subtitle track beats failing.
+async function tryEmbed(embed, requireM3u8) {
   try {
     const embedOrigin = new URL(embed.url).origin + '/';
     const page = await (
@@ -258,10 +260,12 @@ async function tryEmbed(embed) {
     } catch {
       return null;
     }
-    if (!cfg.src || !cfg.src.includes('.m3u8')) return null;
+    if (!cfg.src) return null;
+    if (requireM3u8 && !cfg.src.includes('.m3u8')) return null;
 
     return {
       url: cfg.src,
+      hls: cfg.src.includes('.m3u8'),
       referer: embedOrigin,
       subtitles: cfg.subtitles || [],
       skip: cfg.skip || null,
@@ -272,7 +276,7 @@ async function tryEmbed(embed) {
   }
 }
 
-// Returns { url, subtitles: [{label, src, default}], skip, embedOrigin }
+// Returns { url, hls, subtitles: [{label, src, default}], skip, referer, provider }
 async function getSources(slug, epNum, type = 'sub') {
   const eps = await episodes(slug);
   const ep =
@@ -280,22 +284,25 @@ async function getSources(slug, epNum, type = 'sub') {
     eps.find((e) => parseFloat(e.num) === parseFloat(String(epNum)));
   if (!ep) throw new Error(`Episode ${epNum} not found for ${slug}`);
 
-  const candidates = await pickEmbedUrls(ep.epId, type);
-  if (!candidates.length) {
-    const other = type === 'sub' ? 'dub' : 'sub';
-    const err = new Error(`No ${type} sources found for episode ${epNum}`);
-    err.fallbackType = other;
-    throw err;
-  }
-
-  for (const embed of candidates) {
-    const src = await tryEmbed(embed);
-    if (src) return src;
-  }
-
   const other = type === 'sub' ? 'dub' : 'sub';
+  const tryType = async (audioType) => {
+    const candidates = await pickEmbedUrls(ep.epId, audioType);
+    if (!candidates.length) return null;
+    // prefer HLS sources; otherwise accept any playable stream (mp4 etc.)
+    for (const mode of [true, false]) {
+      for (const embed of candidates) {
+        const src = await tryEmbed(embed, mode);
+        if (src) return src;
+      }
+    }
+    return null;
+  };
+
+  const src = (await tryType(type)) || (await tryType(other));
+  if (src) return src;
+
   const err = new Error(
-    `No playable ${type} source among ${candidates.length} embed(s) for episode ${epNum}`
+    `No playable source found for episode ${epNum} (tried ${type} and ${other})`
   );
   err.fallbackType = other;
   throw err;
