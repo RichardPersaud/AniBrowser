@@ -8,6 +8,25 @@ Personal desktop app for browsing and streaming anime — a GUI equivalent of
 
 ## Install
 
+### Android (APK)
+
+1. Go to the [Releases page](https://github.com/RichardPersaud/AniBrowser/releases)
+2. Under the latest release, download **AniBrowser-v1.0.17.apk** from Assets
+   (direct link:
+   [AniBrowser-v1.0.17.apk](https://github.com/RichardPersaud/AniBrowser/releases/download/v1.0.17/AniBrowser-v1.0.17.apk))
+3. Open the APK and allow "install unknown apps" when Android asks
+
+The APK is a full port of the desktop app for phones — same UI, same scraper,
+same sources, with a bundled Node.js runtime inside the app (no extra
+permissions beyond notifications). It adds the mobile bits: the in-window
+mini player is draggable, tapping the sidebar mid-episode docks the video
+there, and leaving the app hands it to system picture-in-picture. New
+episodes of favorited shows post a system notification (toggle it in
+⚙ Settings → **Favorite update alerts**). The app checks GitHub Releases
+for updates every 6 hours and offers a one-tap install of new APKs.
+
+### Windows
+
 1. Go to the [Releases page](https://github.com/RichardPersaud/AniBrowser/releases)
 2. Under the latest release, download **AniBrowser.Setup.x.y.z.exe** from Assets
    (direct link for v1.0.13:
@@ -80,6 +99,13 @@ Keyboard: `Space` play/pause · `←/→` seek 10s · `F` fullscreen · `N` next
 - `scraper.js` — mirrors ani-cli's flow: search page → episode-list API →
   servers API → ZokoAnime embed → `window.__P` blob (base64 JSON XOR
   `otaku-embed-v1`) → master.m3u8
+- `expo-app/` — the Android port: an Expo/React Native shell around a custom
+  Expo module (`modules/anibrowser-node`) that boots the same `server.js` +
+  `scraper.js` + `ui/` on a bundled Node.js runtime and renders it in a
+  WebView. `scripts/sync-node.sh` re-zips the web assets into
+  `assets/nodejs-project.zip` after any edit to them; `scripts/fetch-libs.sh`
+  pulls the nodejs-mobile native libs from a released APK. Build with
+  `cd expo-app/android && ./gradlew assembleRelease`.
 - `server.js` — local HTTP server (127.0.0.1, random port) serving the UI,
   JSON API, and an HLS proxy that adds the Referer header browsers can't set
 - `ui/` — vanilla HTML/CSS/JS with vendored hls.js (no CDN, works offline)
