@@ -48,6 +48,8 @@ body {
   max-width: 560px;
   display: flex;
   gap: 8px;
+  /* auto margins center the bar between brand and the topbar-right cluster */
+  margin: 0 auto;
 }
 #searchBox { flex: 1; position: relative; }
 #searchInput {
@@ -354,7 +356,9 @@ h2 { font-size: 16px; margin: 18px 0 12px; color: var(--muted); font-weight: 600
   color: var(--muted);
 }
 .empty-icon { font-size: 44px; color: var(--accent); opacity: 0.6; }
-#emptyState p { margin: 8px 0; }
+/* auto horizontal margins: this rule out-specifies .hint's `margin: 0 auto`,
+   so without `auto` here the hint block hugs the left of the empty state */
+#emptyState p { margin: 8px auto; }
 .hint { font-size: 12px; opacity: 0.6; max-width: 460px; margin: 0 auto; }
 
 .spinner {
