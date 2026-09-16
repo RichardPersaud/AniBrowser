@@ -64,16 +64,23 @@ async function bootNode(): Promise<number> {
   const asset = Asset.fromModule(PROJECT_ZIP);
   const local = asset.localUri ?? asset.uri;
   let zipPath: string;
-  if (local.startsWith('file://')) {
-    // release build: the zip ships inside the APK's bundled assets — use in place
-    zipPath = decodeURIComponent(local.replace(/^file:\/\//, ''));
-  } else {
+  if (local.startsWith('http')) {
     // dev (Metro): expo-asset's cache never revalidates, so edited UI/server
     // files would never reach the app — download fresh over HTTP instead
     const dest = new File(Paths.cache, 'nodejs-project.zip');
     if (dest.exists) dest.delete();
     const out = await File.downloadFileAsync(local, dest);
     zipPath = out.uri.replace(/^file:\/\//, '');
+  } else {
+    // release: the zip is embedded as an obfuscated android_res resource
+    // (e.g. res/7Y.zip), not a real file — downloadAsync copies it into the
+    // app cache where Node can open it from the filesystem
+    await asset.downloadAsync();
+    const copied = asset.localUri ?? asset.uri;
+    if (!copied.startsWith('file://')) {
+      throw new Error(`zip asset did not materialize to a file: ${copied}`);
+    }
+    zipPath = decodeURIComponent(copied.replace(/^file:\/\//, ''));
   }
   return AniBrowserNode.startNode(zipPath, dataDir);
 }
