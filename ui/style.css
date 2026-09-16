@@ -1012,12 +1012,14 @@ svg.icon {
 
   /* ---- sidebar: overlay drawer (out of flow => #main keeps full width) ---- */
   #scrim {
-    display: block;
+    display: none;             /* only while the drawer is open — an always-on
+                                  scrim dims the page and swallows every tap */
     position: fixed;
     inset: 0;
     background: rgba(4, 6, 10, 0.55);
     z-index: 45;
   }
+  body.sidebar-open #scrim { display: block; }
   #drawerClose { display: flex; }
   #sidebar,
   body:not(.sidebar-open) #sidebar {   /* restate the closed rule so this block wins */
