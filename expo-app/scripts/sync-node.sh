@@ -12,12 +12,12 @@ trap 'rm -rf "$STAGE"' EXIT
 
 mkdir -p "$STAGE/nodejs-project/ui"
 cp "$ROOT/server.js" "$ROOT/scraper.js" "$STAGE/nodejs-project/"
-cp "$ROOT/android/stub/index.js" "$ROOT/android/stub/updater.js" "$STAGE/nodejs-project/"
+cp "$ROOT/expo-app/node-stub/index.js" "$ROOT/expo-app/node-stub/updater.js" "$STAGE/nodejs-project/"
 cp "$ROOT"/ui/index.html "$ROOT"/ui/style.css "$ROOT"/ui/app.js "$ROOT"/ui/hls.min.js "$ROOT"/ui/empty.png "$STAGE/nodejs-project/ui/"
 
 # keep the bundled version identical to the Electron app's
 VER="$(grep -o '"version": *"[^"]*"' "$ROOT/package.json" | head -1 | sed 's/.*"\(.*\)"/\1/')"
-sed "s/\"version\": *\"[^\"]*\"/\"version\": \"$VER\"/" "$ROOT/android/stub/package.json" > "$STAGE/nodejs-project/package.json"
+sed "s/\"version\": *\"[^\"]*\"/\"version\": \"$VER\"/" "$ROOT/expo-app/node-stub/package.json" > "$STAGE/nodejs-project/package.json"
 
 rm -f "$DEST"
 # Windows ships bsdtar which can write zip; plain `zip` is missing on Git Bash
