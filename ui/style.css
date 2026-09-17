@@ -443,7 +443,10 @@ h2 { font-size: 16px; margin: 18px 0 12px; color: var(--muted); font-weight: 600
   background: var(--bg3);
 }
 .card .card-title {
-  padding: 8px 10px 10px;
+  /* no bottom padding: newer Chromium clamps the box to 2 rows but still
+     paints the 3rd row into padding-bottom — margin keeps the spacing */
+  padding: 8px 10px 0;
+  margin-bottom: 10px;
   font-size: 13px;
   line-height: 1.35;
   /* clamp to 2 rows; hovering the card shows the full title as a tooltip */
@@ -506,9 +509,9 @@ h2 { font-size: 16px; margin: 18px 0 12px; color: var(--muted); font-weight: 600
   color: var(--text);
   border: 1px solid var(--border);
   border-radius: 999px;
-  padding: 8px 20px;
+  padding: 5px 12px;
   cursor: pointer;
-  font-size: 13px;
+  font-size: 12px;
 }
 #moreBtn:hover, .pill-btn:hover { border-color: var(--accent-dim); color: var(--accent); }
 #favBtn.active { border-color: var(--danger); color: var(--danger); }
@@ -586,13 +589,16 @@ h2 { font-size: 16px; margin: 18px 0 12px; color: var(--muted); font-weight: 600
   border: 1px solid var(--border);
   color: var(--muted);
   border-radius: var(--radius);
-  padding: 7px 14px;
+  padding: 5px 10px;
   cursor: pointer;
-  margin-bottom: 14px;
+  font-size: 12px;
+  white-space: nowrap;       /* narrow playerTop must not wrap the label */
+  flex-shrink: 0;
+  margin-bottom: 10px;
 }
 .back-btn:hover { color: var(--text); border-color: var(--accent-dim); }
 
-#detailHead { display: flex; gap: 22px; margin-bottom: 10px; }
+#detailGrid { display: flex; gap: 22px; margin-bottom: 10px; }
 #detailPoster {
   width: 160px;
   aspect-ratio: 283 / 400;
@@ -601,11 +607,24 @@ h2 { font-size: 16px; margin: 18px 0 12px; color: var(--muted); font-weight: 600
   background: var(--bg3);
   flex-shrink: 0;
 }
-#detailTitle { font-size: 26px; line-height: 1.2; margin-top: 6px; }
+#detailMeta { flex: 1; min-width: 0; }
+#detailTitle {
+  font-size: 26px;
+  line-height: 1.2;
+  margin-top: 6px;
+  /* long titles clamp to 2 rows; the native tooltip (set in openDetail)
+     shows the rest on desktop hover */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
 #detailControls { margin-top: 18px; display: flex; align-items: center; gap: 14px; }
 #epCount { color: var(--muted); font-size: 13px; }
 
-/* ---- detail info (synopsis / stats) ---- */
+/* ---- detail info (synopsis / stats) ----
+   Sits directly under the SUB/DUB toggle on desktop; on mobile it drops to a
+   full-width row (display:contents on #detailMeta unwraps it). */
 #detailInfo {
   margin-top: 14px;
   background: var(--bg2);
@@ -648,6 +667,17 @@ h2 { font-size: 16px; margin: 18px 0 12px; color: var(--muted); font-weight: 600
 .meta-row { display: flex; gap: 10px; font-size: 12px; }
 .meta-key { color: var(--muted); width: 84px; flex-shrink: 0; }
 .meta-val { color: var(--text); }
+/* studio / producer names open their collection page */
+.link-btn {
+  background: none;
+  border: none;
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
+  text-align: left;
+}
+.link-btn:hover { text-decoration: underline; }
 
 /* ---- browse page numbers ---- */
 #browsePages { display: flex; gap: 4px; flex-wrap: wrap; justify-content: center; }
@@ -676,10 +706,10 @@ h2 { font-size: 16px; margin: 18px 0 12px; color: var(--muted); font-weight: 600
   background: var(--bg2);
   color: var(--muted);
   border: none;
-  padding: 8px 22px;
+  padding: 5px 14px;
   cursor: pointer;
   font-weight: 600;
-  font-size: 13px;
+  font-size: 12px;
 }
 .segmented button.active {
   background: var(--accent);
@@ -696,9 +726,9 @@ h2 { font-size: 16px; margin: 18px 0 12px; color: var(--muted); font-weight: 600
   border: 1px solid var(--border);
   color: var(--text);
   border-radius: 8px;
-  padding: 9px 4px;
+  padding: 6px 4px;
   cursor: pointer;
-  font-size: 13px;
+  font-size: 12px;
   text-align: center;
 }
 .ep-btn:hover { border-color: var(--accent); color: var(--accent); }
@@ -716,12 +746,32 @@ h2 { font-size: 16px; margin: 18px 0 12px; color: var(--muted); font-weight: 600
 .ep-btn.watched:hover { color: var(--accent); opacity: 1; }
 .ep-btn.current { background: var(--accent); color: #06231f; font-weight: 700; }
 
-/* ---- player ---- */
+/* ---- player ----
+   Column layout: chrome on top, video centered in the space between,
+   controls on the bottom (orders keep the original DOM order intact —
+   the video is reparented to/from the mini player by JS). */
 #playerView { padding: 0; height: 100%; }
-#playerWrap { position: relative; height: 100%; background: #000; }
-#video {
-  width: 100%;
+#playerWrap {
+  position: relative;
   height: 100%;
+  background: #000;
+  display: flex;
+  flex-direction: column;
+}
+#playerTop { order: 1; }
+#videoArea {
+  order: 2;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #000;
+}
+#playerBottom { order: 3; }
+#video {
+  max-width: 100%;
+  max-height: 100%;
   object-fit: contain;
   background: #000;
 }
@@ -741,32 +791,38 @@ h2 { font-size: 16px; margin: 18px 0 12px; color: var(--muted); font-weight: 600
 #playerStatus { color: var(--muted); font-size: 14px; }
 
 #playerTop {
-  position: absolute;
-  top: 0; left: 0; right: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 16px 8px;
+  background: var(--bg1);
+  border-bottom: 1px solid var(--border);
+}
+#playerHead { min-width: 0; }
+#playerTitle {
+  font-weight: 600;
+  font-size: 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#playerEp {
+  color: var(--muted);
+  font-size: 12px;
+}
+#playerTopRow {
   display: flex;
   align-items: center;
   gap: 14px;
-  padding: 12px 16px;
-  background: linear-gradient(rgba(0, 0, 0, 0.75), transparent);
-  z-index: 4;
-  opacity: 0;
-  transition: opacity 0.2s;
 }
 #playerBottom {
-  position: absolute;
-  bottom: 60px; left: 0; right: 0;
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 12px 16px;
-  z-index: 4;
-  opacity: 0;
-  transition: opacity 0.2s;
+  padding: 10px 16px;
+  background: var(--bg1);
+  border-top: 1px solid var(--border);
 }
-#playerWrap:hover #playerTop,
-#playerWrap:hover #playerBottom,
-#playerWrap.show-bars #playerTop,
-#playerWrap.show-bars #playerBottom { opacity: 1; }
 
 /* ---- system picture-in-picture ----
    The shell restores the full player and sets body.pip-full right before the
@@ -778,15 +834,7 @@ body.pip-full #playerTop,
 body.pip-full #playerBottom {
   display: none !important;
 }
-#playerTitle {
-  flex: 1;
-  font-weight: 600;
-  text-shadow: 0 1px 3px #000;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-#playerRight { display: flex; gap: 10px; align-items: center; }
+#playerRight { display: flex; gap: 10px; align-items: center; margin-left: auto; }
 #qualitySel {
   background: var(--bg3);
   color: var(--text);
@@ -807,8 +855,9 @@ body.pip-full #playerBottom {
   color: var(--accent);
   border: 1px solid var(--accent-dim);
   border-radius: 999px;
-  padding: 10px 22px;
+  padding: 6px 14px;
   font-weight: 700;
+  font-size: 12px;
   cursor: pointer;
 }
 .overlay-btn:hover { background: var(--accent); color: #06231f; }
@@ -877,6 +926,213 @@ svg.icon {
 }
 #toast.err { border-color: var(--danger); }
 
+/* ---- upcoming marquee (Home, top strip) ----
+   Each .up-item carries its own right margin (no flex gap) so the track's
+   total width is exactly 2× the sequence and translateX(-50%) loops cleanly. */
+#upMarquee {
+  position: relative;
+  overflow: hidden;
+  margin-bottom: 6px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 0;
+}
+#upMarquee::before, #upMarquee::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 36px;
+  z-index: 2;
+  pointer-events: none;
+}
+#upMarquee::before { left: 0; background: linear-gradient(90deg, var(--bg2), transparent); }
+#upMarquee::after { right: 0; background: linear-gradient(-90deg, var(--bg2), transparent); }
+#upTrack {
+  display: flex;
+  width: max-content;
+  animation: marquee 45s linear infinite;
+}
+#upMarquee:hover #upTrack,
+#upMarquee:active #upTrack { animation-play-state: paused; }
+@keyframes marquee {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
+}
+.up-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-right: 10px;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 12px 6px 6px;
+  cursor: pointer;
+  color: var(--text);
+  font-family: inherit;
+  flex-shrink: 0;
+}
+.up-item:hover { border-color: var(--accent-dim); }
+.up-item img {
+  width: 34px;
+  height: 48px;
+  object-fit: cover;
+  border-radius: 5px;
+  background: var(--bg);
+  flex-shrink: 0;
+}
+.up-meta { display: flex; flex-direction: column; gap: 2px; max-width: 190px; }
+.up-name {
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.up-date { font-size: 11px; color: var(--accent); }
+
+/* ---- release-date badge on Coming soon cards ---- */
+/* wraps the cover art so badges (date) anchor to the image, not the card */
+.card-media {
+  position: relative;
+}
+.date-badge {
+  position: absolute;
+  bottom: 8px;
+  left: 8px;
+  z-index: 2;
+  background: rgba(8, 11, 17, 0.85);
+  border: 1px solid var(--accent-dim);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 999px;
+  padding: 3px 9px;
+  pointer-events: none;
+}
+
+/* ---- horizontal card sliders (Seasons & Movies, Coming soon by year) ---- */
+.slider {
+  display: flex;
+  gap: 14px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 6px;
+  scroll-snap-type: x proximity;
+  scrollbar-width: thin;
+}
+.slider .card {
+  flex: 0 0 auto;
+  width: 132px;
+  scroll-snap-align: start;
+}
+.slider .card img { width: 100%; }
+.year-head { margin: 6px 0 8px; }
+.year-head h3 { margin: 0; font-size: 14px; color: var(--muted); font-weight: 600; }
+
+/* ---- empty-grid state (e.g. everything filtered by the 18+ setting) ---- */
+.empty-rated {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 30px 12px;
+  text-align: center;
+  color: var(--muted);
+}
+.empty-rated img { max-width: 200px; }
+.empty-rated-text { font-size: 14px; color: var(--text); opacity: 0.85; }
+
+/* ---- interactions: transitions + entrance animations ---- */
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes popIn {
+  from { opacity: 0; transform: translateY(-6px) scale(0.98); }
+  to { opacity: 1; transform: none; }
+}
+section:not([hidden]) { animation: fadeUp 0.24s ease; }
+#playerView:not([hidden]) { animation: none; } /* video must not flicker on entry */
+.grid > * { animation: fadeUp 0.28s ease both; }
+.grid > *:nth-child(2) { animation-delay: 0.03s; }
+.grid > *:nth-child(3) { animation-delay: 0.06s; }
+.grid > *:nth-child(4) { animation-delay: 0.09s; }
+.grid > *:nth-child(5) { animation-delay: 0.12s; }
+.grid > *:nth-child(6) { animation-delay: 0.15s; }
+.grid > *:nth-child(7) { animation-delay: 0.18s; }
+.grid > *:nth-child(n+8) { animation-delay: 0.21s; }
+#notifPanel:not([hidden]),
+#settingsPanel:not([hidden]) { animation: popIn 0.18s ease; }
+#toast:not([hidden]) { animation: fadeUp 0.2s ease; }
+button, select, .back-btn, .pill-btn {
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+/* ---- terms & conditions gate ---- */
+#tosOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: rgba(4, 6, 10, 0.88);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+}
+#tosPanel {
+  width: 100%;
+  max-width: 560px;
+  max-height: 86vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 18px 20px;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.65);
+}
+#tosPanel h2 { color: var(--text); margin: 0 0 10px; }
+#tosText {
+  overflow-y: auto;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--muted);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-right: 6px;
+}
+#tosText strong { color: var(--text); }
+#tosActions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 14px; }
+#tosActions .pill-btn { padding: 8px 18px; }   /* T&C gate CTAs stay prominent */
+#tosAccept { background: var(--accent); border-color: var(--accent); color: #06231f; font-weight: 700; }
+#tosAccept:hover { background: var(--accent-dim); color: #fff; }
+#tosDecline:disabled { opacity: 0.5; cursor: default; }
+
+/* ---- player sub/dub hot-swap toggle ----
+   badge-sized pills; flex:none so a tight playerTop can never squeeze the
+   labels (DUB used to clip) */
+#swapToggle {
+  flex-shrink: 0;
+  border-radius: 999px;
+}
+#swapToggle button {
+  flex: none;
+  padding: 3px 12px;
+  font-size: 11px;
+  line-height: 1.6;
+}
+
 /* ---- mobile popup search (the topbar form reparents into #searchMount) ---- */
 #searchOverlay {
   position: fixed;
@@ -919,12 +1175,14 @@ svg.icon {
 }
 #searchOverlayClose .icon { width: 15px; height: 15px; }
 
-/* ---- in-window mini player (docked bottom-right while browsing) ---- */
+/* ---- in-window mini player (docked bottom-right while browsing) ----
+   z-index above the topbar (70) and drawer (80): the mini player must never
+   slide under any chrome, including when dragged near the navbar */
 #miniPlayer {
   position: fixed;
   right: 20px;
   bottom: 20px;
-  z-index: 60;
+  z-index: 85;
   width: 340px;
   max-width: calc(100vw - 40px);
   background: #000;
@@ -1040,11 +1298,23 @@ svg.icon {
 
   /* ---- sections / detail ---- */
   section { padding: 14px 16px 20px; }   /* #playerView keeps its own padding: 0 */
-  #detailHead { gap: 16px; }
+  /* detail head unwraps: poster + title row 1, controls row 2, info row 3 */
+  #detailGrid { display: flex; flex-wrap: wrap; gap: 12px; }
+  #detailMeta { display: contents; }
+  #detailTitle { flex: 1; min-width: 0; }
+  #detailControls { flex: 1 1 100%; }
+  #detailInfo { flex: 1 1 100%; margin-top: 0; padding: 12px 14px; }
+  /* synopsis clamps to 3 lines behind a View more toggle (mobile only) */
+  #detailSynopsis.clamped {
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  #synopsisToggle { margin-top: 8px; padding: 5px 12px; }
   #detailPoster { width: 128px; }
   #detailTitle { font-size: 22px; }
   #detailControls { flex-wrap: wrap; gap: 10px; }
-  #detailInfo { padding: 12px 14px; }
   #browseFilters { gap: 8px; }
   .bf { flex: 1 1 30%; }
   .bf select { min-width: 0; max-width: none; width: 100%; }
@@ -1055,23 +1325,32 @@ svg.icon {
   .fav-btn { width: 40px; height: 40px; top: 6px; right: 6px; font-size: 16px; }
   .fav-btn.remove-btn { right: 52px; }
   .alpha-btn, .page-btn { min-width: 38px; padding: 9px 10px; font-size: 13px; }
-  .chip { padding: 7px 12px; font-size: 12px; }
-  .ep-btn { padding: 12px 4px; font-size: 14px; }
-  .side-item { padding: 14px 12px; font-size: 15px; }
-  .pill-btn, #moreBtn { padding: 10px 16px; font-size: 14px; }
+  .chip { padding: 5px 10px; font-size: 11px; }
+  .ep-btn { padding: 8px 4px; font-size: 12px; }
+  .side-item { padding: 14px 12px; font-size: 15px; }   /* navigation — stays full-size */
+  .pill-btn, #moreBtn { padding: 6px 12px; font-size: 12px; }
   .sug-item { padding: 10px 12px; font-size: 14px; }
   .notif-item { padding: 11px 12px; }
-  .back-btn { padding: 10px 14px; font-size: 14px; }
+  .back-btn { padding: 6px 12px; font-size: 12px; }
   .setting-row select { font-size: 14px; padding: 9px 10px; }
 
-  /* ---- player: overlay bars reachable on touch ---- */
+  /* ---- player: chrome rows wrap on narrow screens ---- */
   #playerWrap { touch-action: manipulation; }   /* no double-tap zoom; dblclick still fires */
-  #playerTop { padding: 10px 12px; }
-  #playerBottom { bottom: 64px; padding: 10px 12px; flex-wrap: wrap; }  /* above native controls */
-  #playerBottom .pill-btn { padding: 11px 14px; }
-  #playerRight { gap: 8px; }
-  #qualitySel { padding: 9px 10px; font-size: 13px; }
-  .overlay-btn { right: 10px; bottom: 88px; padding: 11px 18px; }       /* skip intro */
+  #playerTop { padding: 8px 12px 6px; }
+  #playerTopRow { flex-wrap: wrap; }
+  #playerBottom { padding: 8px 12px; flex-wrap: wrap; }
+  #playerBottom .pill-btn { padding: 6px 12px; }
+  #playerRight { gap: 5px; }
+  #qualitySel { padding: 4px 7px; font-size: 11px; }
+  #playerRight .pill-btn {
+    padding: 5px 10px;
+    font-size: 11px;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .overlay-btn { right: 10px; bottom: 88px; padding: 8px 14px; }        /* skip intro */
 }
 
 @media (max-width: 480px) {
@@ -1080,10 +1359,10 @@ svg.icon {
   .grid { grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 10px; }
   .grid.small { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
   .card .card-title { font-size: 12px; }
-  #detailHead { gap: 14px; }
+  #detailGrid { gap: 10px; }
   #detailPoster { width: 110px; }
   #detailTitle { font-size: 20px; }
-  .segmented button { padding: 9px 14px; font-size: 13px; }
+  .segmented button { padding: 5px 12px; font-size: 12px; }
   .meta-row { flex-wrap: wrap; }
   .meta-key { width: 74px; }
   .bf { flex: 1 1 42%; }
@@ -1149,7 +1428,7 @@ svg.icon {
   .page-btn { min-width: 28px; padding: 5px 7px; }
 
   /* detail page: smaller poster, wrapping controls, tighter title */
-  #detailHead { gap: 12px; }
+  #detailGrid { gap: 10px; }
   #detailPoster { width: 104px; }
   #detailTitle { font-size: 19px; }
   #detailControls { flex-wrap: wrap; gap: 8px; margin-top: 12px; }

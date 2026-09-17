@@ -76,9 +76,31 @@ function parseFilmList(html) {
       poster: img ? img[1] : null,
       // adult shows carry an 18+ tick on their card — feeds the R-content toggle
       r18: !!b.match(/tick tick-rate">18\+</),
+      // top-upcoming cards put the premiere date in the duration slot
+      // (regular cards hold a runtime like "23m" there — harmless extra field)
+      date: (() => {
+        const d = b.match(/fdi-duration">([^<]+)</);
+        const v = d ? decodeEntities(d[1].trim()) : null;
+        return v && v !== '...' ? v : null; // '...' = no date announced yet
+      })(),
     });
   }
   return results;
+}
+
+// studio / producer listing pages, e.g. /studios/dle or /producers/shin-ei-animation
+async function browsePath(pathname, page = 1) {
+  if (!/^\/(studios|producers)\/[a-z0-9-]+$/i.test(pathname)) throw new Error('Bad path');
+  const url = `${BASE}${pathname}${page > 1 ? `?page=${page}` : ''}`;
+  const html = await (await get(url)).text();
+  return { results: parseFilmList(html), totalPages: parseTotalPages(html) || 1, page };
+}
+
+// top-upcoming: not-yet-aired shows, newest premiere date first; the cards
+// carry the date in the fdi-duration slot (captured as `date` above)
+async function upcoming(page = 1) {
+  const url = `${BASE}/top-upcoming${page > 1 ? `?page=${page}` : ''}`;
+  return parseFilmList(await (await get(url)).text());
 }
 
 async function search(query, page = 1) {
@@ -146,6 +168,47 @@ function genreSlugs(html) {
   return [...m[1].matchAll(/\/genres\/([a-z0-9-]+)/g)].map((x) => x[1]);
 }
 
+// like metaSection, but keeps each link's path so the UI can open the
+// studio/producer listing pages (e.g. /studios/dle, /producers/toei-animation)
+function metaLinks(html, label) {
+  const m = html.match(
+    new RegExp(`item-head">${label}:</span>([\\s\\S]{0,3000}?)(?=<\\/div>|<div class="item)`)
+  );
+  if (!m) return [];
+  return [...m[1].matchAll(/<a class="name" href="([^"]+)"\s+title="([^"]*)"/g)]
+    .map((x) => ({ name: decodeEntities(x[2]), path: new URL(x[1], BASE).pathname }));
+}
+
+// "Related Anime" block on the detail page: the seasons / movies / spin-offs
+// of the same franchise. Only some detail pages ship the section — absent → [].
+function parseRelated(html) {
+  const start = html.indexOf('cat-heading">Related Anime<');
+  if (start < 0) return [];
+  const end = html.indexOf('<section', start); // next sidebar block ends the section
+  const seg = html.slice(start, end > 0 ? end : start + 30000);
+  const out = [];
+  const seen = new Set();
+  for (const b of seg.split('<div class="film-poster').slice(1)) {
+    const m = b.match(
+      /<h3 class="film-name">\s*<a href="[^"]*\/([^"?\/]+)"\s+title="([^"]*)"/
+    );
+    if (!m || seen.has(m[1])) continue;
+    seen.add(m[1]);
+    const img = b.match(/<img src="([^"]+)"\s+class="film-poster-img"/);
+    // the show type (TV / MOVIE / ONA …) trails the tick row in the entry
+    const type = (b.match(/<div class="dot"><\/div>\s*([A-Za-z]+)/) || [])[1] || null;
+    out.push({
+      slug: m[1],
+      title: decodeEntities(m[2]),
+      poster: img ? img[1] : null,
+      type,
+      r18: !!b.match(/tick tick-rate">18\+</),
+    });
+    if (out.length >= 40) break; // defensive cap — some franchises list a lot
+  }
+  return out;
+}
+
 function metaText(html, label) {
   const m = html.match(
     new RegExp(`item-head">${label}:</span>\\s*<span class="name">([^<]*)</span>`)
@@ -193,6 +256,10 @@ async function details(slug) {
     genreSlugs: genreSlugs(html),
     studios: metaSection(html, 'Studios') || [],
     producers: metaSection(html, 'Producers') || [],
+    // linked forms carry the listing-page path for click-through navigation
+    studioLinks: metaLinks(html, 'Studios'),
+    producerLinks: metaLinks(html, 'Producers'),
+    related: parseRelated(html),
   };
   detailCache.set(slug, { t: Date.now(), data });
   return data;
@@ -335,6 +402,6 @@ async function getSources(slug, epNum, type = 'sub') {
 }
 
 module.exports = {
-  UA, BASE, search, recentlyUpdated, browse, details, episodes, getSources,
-  isDeadEp,
+  UA, BASE, search, recentlyUpdated, browse, browsePath, upcoming, details,
+  episodes, getSources, isDeadEp,
 };

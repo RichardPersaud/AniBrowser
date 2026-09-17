@@ -89,6 +89,8 @@
         <p class="hint">System notifications on Android when a favorite gets new episodes. The bell above always works.</p>
         <hr class="setting-sep">
         <p class="hint" id="backupHint"></p>
+        <button id="exportBtn" class="pill-btn" style="margin: 8px 0 4px">Download my data</button>
+        <p class="hint">Saves your favorites, history and settings as a JSON file in your AniBrowser data folder.</p>
         <hr class="setting-sep">
         <label class="setting-row">Updates
           <div class="update-row">
@@ -122,12 +124,14 @@
       </div>
       <!-- HOME -->
       <section id="homeView">
+        <!-- upcoming strip: auto-scrolls, tap to open, shows the premiere date -->
+        <div id="upMarquee" hidden><div id="upTrack"></div></div>
         <div id="continueSection" hidden>
           <div class="section-head">
             <h2>Continue watching</h2>
             <button id="clearHistoryBtn" class="pill-btn" hidden title="Remove every show from watch history"><svg class="icon"><use href="#i-trash"></use></svg> Clear history</button>
           </div>
-          <div id="continueGrid" class="grid"></div>
+          <div id="continueGrid" class="slider"></div>
         </div>
         <div id="recentSection" hidden>
           <h2>Recently updated</h2>
@@ -138,6 +142,13 @@
           <h2 id="resultsTitle">Results</h2>
           <div id="resultsGrid" class="grid"></div>
           <div id="moreRow"><button id="moreBtn" hidden>Load more</button></div>
+        </div>
+        <div id="upcomingSection" hidden>
+          <div class="section-head">
+            <h2>Coming soon</h2>
+            <button id="upAll" class="pill-btn" hidden>View all</button>
+          </div>
+          <div id="upcomingYears"></div>
         </div>
         <div id="emptyState">
           <div class="empty-icon"><svg><use href="#i-play"></use></svg></div>
@@ -203,7 +214,7 @@
       <!-- DETAIL -->
       <section id="detailView" hidden>
         <button class="back-btn" data-back="back">← Back</button>
-        <div id="detailHead">
+        <div id="detailGrid">
           <img id="detailPoster" alt="">
           <div id="detailMeta">
             <h1 id="detailTitle"></h1>
@@ -215,42 +226,73 @@
               <span id="epCount"></span>
               <button id="favBtn" class="pill-btn" title="Add to favorites"><svg class="icon"><use href="#i-heart"></use></svg> Favorite</button>
             </div>
+            <!-- desktop: sits in the right column directly under the SUB/DUB toggle;
+                 mobile: display:contents drops it to a full-width row below the head -->
+            <div id="detailInfo" hidden>
+              <div id="detailInfoLoading"><div class="spinner small"></div></div>
+              <div id="detailSkeleton" hidden></div>
+              <p id="detailSynopsis"></p>
+              <button id="synopsisToggle" class="pill-btn" hidden>View more</button>
+              <div id="detailChips"></div>
+              <div id="detailGenres" class="chip-row"></div>
+              <div id="detailMetaRows"></div>
+            </div>
           </div>
-        </div>
-        <div id="detailInfo" hidden>
-          <div id="detailInfoLoading"><div class="spinner small"></div></div>
-          <div id="detailSkeleton" hidden></div>
-          <p id="detailSynopsis"></p>
-          <div id="detailChips"></div>
-          <div id="detailGenres" class="chip-row"></div>
-          <div id="detailMetaRows"></div>
         </div>
       <h2>Episodes</h2>
       <div id="epGrid" class="ep-grid"></div>
       <div id="epLoading"><div class="spinner"></div></div>
+      <div id="relSection" hidden>
+        <div class="section-head">
+          <h2>Seasons &amp; Movies</h2>
+        </div>
+        <div id="relSlider" class="slider"></div>
+      </div>
       <div id="recSection" hidden>
         <h2>Recommended for you</h2>
         <div id="recGrid" class="grid"></div>
       </div>
     </section>
 
+    <!-- COLLECTION: all anime from a studio / producer, or a show's full
+         seasons & movies list (opened via "View all") -->
+    <section id="collectionView" hidden>
+      <button class="back-btn" data-back="back">← Back</button>
+      <h2 id="collectionTitle"></h2>
+      <div id="collectionGrid" class="grid"></div>
+      <div id="collectionPager" hidden>
+        <button id="colPrev" class="pill-btn"><svg class="icon"><use href="#i-chev-left"></use></svg> Prev</button>
+        <span id="colPageLabel"></span>
+        <button id="colNext" class="pill-btn">Next <svg class="icon"><use href="#i-chev-right"></use></svg></button>
+      </div>
+    </section>
+
     <!-- PLAYER -->
     <section id="playerView" hidden>
       <div id="playerWrap">
-        <video id="video" controls playsinline></video>
+        <div id="videoArea"><video id="video" controls playsinline></video></div>
         <button id="skipIntroBtn" class="overlay-btn" hidden>Skip Intro →</button>
         <div id="playerLoading" class="player-loading"><div class="spinner"></div><div id="playerStatus"></div><button id="playerCancelBtn" class="back-btn">← Back to episodes</button></div>
         <div id="playerTop">
-          <button class="back-btn" data-back="detail">← Episodes</button>
-          <div id="playerTitle"></div>
-          <div id="playerRight">
-            <select id="qualitySel" title="Quality"><option value="-1">Auto</option></select>
-            <button id="autoNextBtn" class="pill-btn" title="Auto-play next episode">Auto-next: OFF</button>
+          <div id="playerHead">
+            <div id="playerTitle"></div>
+            <div id="playerEp"></div>
+          </div>
+          <div id="playerTopRow">
+            <button class="back-btn" data-back="detail">← Episodes</button>
+            <div id="playerRight">
+              <!-- hot swap: re-resolves the current episode in the other audio
+                   track; playback resumes at the saved position -->
+              <div id="swapToggle" class="segmented" title="Switch audio track">
+                <button data-type="sub" class="active">SUB</button>
+                <button data-type="dub">DUB</button>
+              </div>
+              <select id="qualitySel" title="Quality"><option value="-1">Auto</option></select>
+              <button id="autoNextBtn" class="pill-btn" title="Auto-play next episode">Auto OFF</button>
+            </div>
           </div>
         </div>
         <div id="playerBottom">
-          <button id="prevEpBtn" class="pill-btn"><svg class="icon"><use href="#i-chev-left"></use></svg> Prev</button>
-          <button id="nextEpBtn" class="pill-btn">Next <svg class="icon"><use href="#i-chev-right"></use></svg></button>
           <span id="providerLabel"></span>
         </div>
       </div>
@@ -274,6 +316,25 @@
     <div id="miniSlot"></div>
   </div>
   <div id="toast" hidden></div>
+  <!-- first-launch gate: nothing is usable until these terms are accepted -->
+  <div id="tosOverlay" hidden>
+    <div id="tosPanel">
+      <h2>Welcome to AniBrowser</h2>
+      <div id="tosText">
+        <p><strong>1. Personal use.</strong> AniBrowser is provided for your personal, non-commercial use only. You may not sell, sublicense, or redistribute the app itself.</p>
+        <p><strong>2. Third-party content.</strong> AniBrowser does not host, store, upload, or create any media. All anime titles, artwork and video streams are retrieved live from publicly accessible third-party websites and remain the property of their respective rights holders. AniBrowser acts solely as a viewer for content that those third parties make publicly available.</p>
+        <p><strong>3. Your responsibility.</strong> You are solely responsible for using AniBrowser in a way that complies with the laws of your country and region, including copyright law. If accessing such content is not permitted where you live, you must not use AniBrowser.</p>
+        <p><strong>4. No warranty.</strong> AniBrowser is provided &ldquo;as is&rdquo; and &ldquo;as available&rdquo;, without warranties of any kind, express or implied. To the fullest extent permitted by law, the operator is not liable for any damages, data loss, or legal claims arising from your use of the app or from content you view through it.</p>
+        <p><strong>5. Your data.</strong> Your favorites, watch history and settings are stored only on your own device (plus a backup file in your device&rsquo;s AniBrowser folder). Nothing about you is collected, tracked, or shared.</p>
+        <p><strong>6. Content removal.</strong> Rights holders can request removal of links to their content by contacting the developer; such links will be removed promptly.</p>
+        <p><strong>7. Acceptance.</strong> By tapping &ldquo;I agree&rdquo; you confirm that you have read, understood, and accepted these terms. If you do not agree, do not use AniBrowser.</p>
+      </div>
+      <div id="tosActions">
+        <button id="tosDecline" class="pill-btn">Decline</button>
+        <button id="tosAccept" class="pill-btn">I agree</button>
+      </div>
+     </div>
+  </div>
   <script src="hls.min.js"></script>
   <script src="app.js"></script>
 </body>
