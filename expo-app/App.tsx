@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import { WebView } from 'react-native-webview';
 import { Asset } from 'expo-asset';
+import * as ScreenOrientation from 'expo-screen-orientation';
 import { File, Paths } from 'expo-file-system';
 import AniBrowserNode from './modules/anibrowser-node';
 
@@ -66,11 +67,28 @@ async function bootNode(): Promise<number> {
   let zipPath: string;
   if (local.startsWith('http')) {
     // dev (Metro): expo-asset's cache never revalidates, so edited UI/server
-    // files would never reach the app — download fresh over HTTP instead
+    // files would never reach the app — download fresh over HTTP instead.
+    // Metro occasionally queues the asset request behind a bundle build and
+    // the native socket times out, so give it a few chances before failing.
     const dest = new File(Paths.cache, 'nodejs-project.zip');
-    if (dest.exists) dest.delete();
-    const out = await File.downloadFileAsync(local, dest);
-    zipPath = out.uri.replace(/^file:\/\//, '');
+    // untouched fallback copy — used when Metro's asset endpoint queues the
+    // request behind a bundle build and outruns the native socket timeout
+    const keep = new File(Paths.cache, 'nodejs-project.last.zip');
+    let zipUri: string | null = null;
+    let lastErr: unknown = null;
+    for (let i = 0; i < 4 && !zipUri; i++) {
+      try {
+        if (dest.exists) dest.delete();
+        const out = await File.downloadFileAsync(local, dest);
+        zipUri = out.uri;
+      } catch (e) {
+        lastErr = e;
+        await new Promise((r) => setTimeout(r, 1500));
+      }
+    }
+    if (!zipUri && keep.exists) zipUri = keep.uri;
+    if (!zipUri) throw lastErr;
+    zipPath = zipUri.replace(/^file:\/\//, '');
   } else {
     // release: the zip is embedded as an obfuscated android_res resource
     // (e.g. res/7Y.zip), not a real file — downloadAsync copies it into the
@@ -120,6 +138,13 @@ export default function App() {
     return () => sub.remove();
   }, []);
 
+  // the app is always portrait — flipping the phone never rotates the UI
+  useEffect(() => {
+    ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP).catch(
+      () => {}
+    );
+  }, []);
+
   // backgrounding with the video docked in the mini player: move it back into
   // the full player with the chrome stripped (body.pip-full) so the shell's
   // picture-in-picture window (a live mirror of the activity surface) shows
@@ -153,6 +178,9 @@ export default function App() {
           backgroundColor="#0b0e14"
           javaScriptEnabled
           domStorageEnabled
+          // CDP inspection of the web UI (chrome://inspect / adb forward) —
+          // no-op outside dev builds where the app isn't debuggable anyway
+          webContentsDebuggingEnabled
           mediaPlaybackRequiresUserAction={false}
           allowsFullscreenVideo
           setSupportMultipleWindows={false}
@@ -169,6 +197,8 @@ export default function App() {
             try {
               const msg = JSON.parse(nativeEvent.data);
               if (msg.type === 'videoActive') {
+                // only forwarded for PiP docking — the sensor never touches the
+                // app UI, and the app UI never rotates
                 AniBrowserNode.setVideoActive(!!msg.active);
               } else if (msg.type === 'enterPip') {
                 // sidebar tap while a video is playing — dock it into

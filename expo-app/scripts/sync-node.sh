@@ -13,7 +13,7 @@ trap 'rm -rf "$STAGE"' EXIT
 mkdir -p "$STAGE/nodejs-project/ui"
 cp "$ROOT/server.js" "$ROOT/scraper.js" "$STAGE/nodejs-project/"
 cp "$ROOT/android/stub/index.js" "$ROOT/android/stub/updater.js" "$STAGE/nodejs-project/"
-cp "$ROOT"/ui/index.html "$ROOT"/ui/style.css "$ROOT"/ui/app.js "$ROOT"/ui/hls.min.js "$STAGE/nodejs-project/ui/"
+cp "$ROOT"/ui/index.html "$ROOT"/ui/style.css "$ROOT"/ui/app.js "$ROOT"/ui/hls.min.js "$ROOT"/ui/empty.png "$STAGE/nodejs-project/ui/"
 
 # keep the bundled version identical to the Electron app's
 VER="$(grep -o '"version": *"[^"]*"' "$ROOT/package.json" | head -1 | sed 's/.*"\(.*\)"/\1/')"

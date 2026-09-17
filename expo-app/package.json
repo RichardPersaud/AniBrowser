@@ -7,6 +7,7 @@
     "expo-asset": "^57.0.17",
     "expo-build-properties": "^57.0.17",
     "expo-file-system": "^57.0.7",
+    "expo-screen-orientation": "^57.0.2",
     "expo-status-bar": "~57.0.1",
     "react": "19.2.3",
     "react-native": "0.86.3",

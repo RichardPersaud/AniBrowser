@@ -35,7 +35,6 @@ const state = {
   progressTimer: null,
   introTimer: null,
   view: 'homeView',
-  prevView: 'homeView',
   recentLoaded: false,
 };
 
@@ -347,10 +346,9 @@ function toast(msg, isErr = false) {
 }
 
 function showView(name) {
-  for (const v of ['homeView', 'browseView', 'favView', 'detailView', 'playerView']) {
+  for (const v of ['homeView', 'browseView', 'favView', 'detailView', 'playerView', 'collectionView']) {
     $(v).hidden = v !== name;
   }
-  $('playerWrap').classList.remove('show-bars');   // touch-only class; no-op on desktop
   const navKey = name === 'favView' ? 'favorites'
     : name === 'browseView' ? 'browse'
     : name === 'homeView' ? 'home' : null;
@@ -359,6 +357,52 @@ function showView(name) {
   );
   state.view = name;
   $('main').scrollTop = 0;
+}
+
+/* ---- navigation history (the back trail) ----
+   Every forward navigation pushes a restore snapshot plus a browser history
+   entry, so the UI back buttons and the Android hardware back (webview
+   goBack() → popstate) walk the exact same trail. Restore snapshots are
+   closures — a detail page reopens itself, other views just re-show. */
+const histStack = [];
+let restoring = false;
+function pushHist(restore) {
+  if (restoring) return;
+  histStack.push(restore);
+  try { history.pushState({ anibrowser: histStack.length }, ''); } catch { /* ignored */ }
+}
+function goBack() {
+  // only unwind via the browser when a pushed entry is actually on top
+  if (history.state && history.state.anibrowser) { history.back(); return; }
+  restoreHist();
+}
+function restoreHist() {
+  restoring = true;
+  try {
+    const restore = histStack.pop();
+    if (restore) restore();
+    else navHome();
+  } finally { restoring = false; }
+}
+window.addEventListener('popstate', () => restoreHist());
+
+// re-show a view-level snapshot without re-pushing history
+function restoreView(v) {
+  if (v === 'browseView') showView('browseView');
+  else if (v === 'favView') { renderFavorites(); showView('favView'); }
+  else if (v === 'detailView') showView('detailView');
+  else if (v === 'playerView') { stopPlayback(); showView('detailView'); renderEpisodes(); }
+  else {
+    // home: keep any active search results on screen, else the home sections
+    showView('homeView');
+    renderContinue();
+    if (!$('resultsSection').hidden) {
+      $('recentSection').hidden = true;
+    } else {
+      $('recentSection').hidden = false;
+      loadRecent();
+    }
+  }
 }
 
 function fmtTime(s) {
@@ -528,10 +572,17 @@ const GENRES = [
   'workplace',
 ];
 
+// rating filter: R+ / Rx only exist while 18+ content is allowed to show —
+// under "Hide" those listings would be filtered out anyway (empty results)
+function ratingOptions() {
+  const base = [['g', 'G'], ['pg', 'PG'], ['pg_13', 'PG-13'], ['r_17', 'R']];
+  if (prefs().showR18) base.push(['r_plus', 'R+'], ['rx', 'Rx']);
+  return base;
+}
+
 const FILTER_OPTIONS = {
   type: [['tv', 'TV'], ['movie', 'Movie'], ['ova', 'OVA'], ['ona', 'ONA'], ['special', 'Special'], ['music', 'Music']],
   status: [['completed', 'Finished airing'], ['releasing', 'Currently airing'], ['not_yet_aired', 'Not yet aired']],
-  rating: [['g', 'G'], ['pg', 'PG'], ['pg_13', 'PG-13'], ['r_17', 'R'], ['r_plus', 'R+'], ['rx', 'Rx']],
   score: [['10', '(10) Masterpiece'], ['9', '(9) Great'], ['8', '(8) Very good'], ['7', '(7) Good'], ['6', '(6) Fine'], ['5', '(5) Average'], ['4', '(4) Bad'], ['3', '(3) Very bad'], ['2', '(2) Horrible'], ['1', '(1) Appalling']],
   season: [['spring', 'Spring'], ['summer', 'Summer'], ['fall', 'Fall'], ['winter', 'Winter']],
   language: [['sub', 'SUB'], ['dub', 'DUB']],
@@ -553,11 +604,26 @@ const bfParams = {
   Score: 'score', Season: 'season', Language: 'language', Sort: 'sort',
 };
 
+function rebuildRatingFilter() {
+  const sel = $('bfRating');
+  const cur = sel.value;
+  sel.innerHTML = '<option value="">Any</option>';
+  for (const [v, label] of ratingOptions()) {
+    const opt = el('option', null, label);
+    opt.value = v;
+    sel.appendChild(opt);
+  }
+  // keep the choice only while it's still offered (18+ hidden drops R+/Rx)
+  sel.value = ratingOptions().some(([v]) => v === cur) ? cur : '';
+}
+
 function initBrowseUI() {
-  // alphabet bar: All / 0-9 / A-Z / Other
+  // alphabet bar: All / # / A-Z / ?  (data-letter keeps the site's own
+  // '0-9' and 'other' values — only the labels change)
   const bar = $('alphaBar');
+  const alphaLabels = { all: 'All', '0-9': '#', other: '?' };
   for (const l of ['all', '0-9', ...'abcdefghijklmnopqrstuvwxyz'.split(''), 'other']) {
-    const b = el('button', 'alpha-btn', l === 'all' ? 'All' : l === '0-9' ? '0-9' : l === 'other' ? 'Other' : l.toUpperCase());
+    const b = el('button', 'alpha-btn', alphaLabels[l] || l.toUpperCase());
     b.dataset.letter = l;
     if (l === 'all') b.classList.add('active');
     bar.appendChild(b);
@@ -573,7 +639,9 @@ function initBrowseUI() {
     loadBrowse();
   });
 
-  // filter selects
+  // filter selects (rating is filled by rebuildRatingFilter — its options
+  // depend on the 18+ setting)
+  rebuildRatingFilter();
   for (const f of bfSelects) {
     const sel = $('bf' + f);
     const key = f.toLowerCase();
@@ -613,19 +681,28 @@ function initBrowseUI() {
       const open = document.body.classList.toggle('filters-open');
       $('bfToggle').classList.toggle('open', open);
     });
+    // interacting outside the open filter panel minimizes it again
+    document.addEventListener('click', (e) => {
+      if (!document.body.classList.contains('filters-open')) return;
+      if (e.target.closest('#browseFilters') || e.target.closest('#bfToggle')) return;
+      document.body.classList.remove('filters-open');
+      $('bfToggle').classList.remove('open');
+    });
   }
 
+  const browseTop = () => { $('main').scrollTop = 0; }; // new page starts at the top of the content
   $('browsePrev').addEventListener('click', () => {
-    if (browse.page > 1) { browse.page -= 1; loadBrowse(); }
+    if (browse.page > 1) { browse.page -= 1; loadBrowse(); browseTop(); }
   });
   $('browseNext').addEventListener('click', () => {
-    if (browse.page < browse.totalPages) { browse.page += 1; loadBrowse(); }
+    if (browse.page < browse.totalPages) { browse.page += 1; loadBrowse(); browseTop(); }
   });
   $('browsePages').addEventListener('click', (e) => {
     const b = e.target.closest('.page-btn');
     if (!b || Number(b.textContent) === browse.page) return;
     browse.page = Number(b.textContent);
     loadBrowse();
+    browseTop();
   });
 }
 
@@ -650,7 +727,9 @@ async function loadBrowse() {
     browse.totalPages = totalPages;
     const grid = $('browseGrid');
     grid.innerHTML = ''; // drop the skeleton placeholders
-    for (const r of results.filter(r18Visible)) grid.appendChild(makeCard(r));
+    const shown = results.filter(r18Visible);
+    if (!shown.length) renderGridEmpty(grid, 'Nothing to show here');
+    else for (const r of shown) grid.appendChild(makeCard(r));
     $('browsePageLabel').textContent = totalPages > 1
       ? `Page ${page} of ${totalPages}`
       : 'Page 1';
@@ -716,6 +795,7 @@ function navHome() {
   showView('homeView');
   renderContinue();
   loadRecent();
+  renderUpcoming();
 }
 
 /* --- in-window mini player while browsing --- */
@@ -728,7 +808,7 @@ function videoActive() {
 // move the live <video> element back into the full player (playback survives
 // reparenting; only removing it from the document entirely would reset it)
 function restoreVideoToPlayer() {
-  $('playerWrap').prepend($('video'));
+  $('videoArea').appendChild($('video'));
   $('miniPlayer').hidden = true;
 }
 
@@ -760,29 +840,8 @@ $('miniExpand').addEventListener('click', () => {
 });
 $('miniClose').addEventListener('click', () => stopPlayback());
 
-/* --- touch: tap the video area to reveal the overlay bars; double-tap = fullscreen --- */
-{
-  const wrap = $('playerWrap');
-  let barsTimer = null;
-  wrap.addEventListener('click', (e) => {
-    if (!mqMobile.matches) return;                        // desktop keeps hover-reveal
-    if (e.target.closest('button, select, input, a')) return;
-    const now = Date.now();
-    const dbl = now - (wrap._lastTap || 0) < 300;
-    wrap._lastTap = now;
-    if (dbl) {
-      clearTimeout(barsTimer);
-      wrap.classList.remove('show-bars');
-      document.fullscreenElement ? document.exitFullscreen() : wrap.requestFullscreen();
-      return;
-    }
-    wrap.classList.toggle('show-bars');
-    clearTimeout(barsTimer);
-    if (wrap.classList.contains('show-bars')) {
-      barsTimer = setTimeout(() => wrap.classList.remove('show-bars'), 3500);
-    }
-  });
-}
+/* --- touch: (removed) custom fullscreen / show-bars handling — the video
+       keeps its native controls only --- */
 
 // drag the mini player anywhere by its title bar (mouse + touch via pointer
 // events), clamped to the viewport
@@ -828,6 +887,12 @@ async function sidebarNav(target) {
       stopPlayback();
     }
   }
+  // forward navigation leaves a trail entry — except re-tapping the view
+  // you're already on (that would just stack a no-op "back to same place")
+  const targetView = target === 'home' ? 'homeView'
+    : target === 'browse' ? 'browseView' : 'favView';
+  const fromView = state.view; // capture now — state.view moves on
+  if (fromView !== targetView) pushHist(() => restoreView(fromView));
   if (target === 'home') navHome();
   else if (target === 'browse') {
     showView('browseView');
@@ -840,6 +905,9 @@ async function sidebarNav(target) {
 
 document.querySelectorAll('.side-item').forEach((b) => {
   b.addEventListener('click', () => {
+    // buttons like the drawer's ✕ carry .side-item styling but no nav target —
+    // they must not fall through to the favorites branch
+    if (!b.dataset.nav) return;
     if (mqMobile.matches) { sidebarOpen = false; applySidebar(false); } // close the drawer on navigate
     sidebarNav(b.dataset.nav);
   });
@@ -849,6 +917,8 @@ $('searchForm').addEventListener('submit', (e) => {
   e.preventDefault();
   const q = $('searchInput').value.trim();
   if (!q) return;
+  // revealing results over the home sections is a forward hop — back undoes it
+  if ($('resultsSection').hidden) pushHist(() => restoreView('homeView'));
   state.query = q;
   state.page = 1;
   $('resultsGrid').innerHTML = '';
@@ -875,10 +945,12 @@ async function loadResults(append) {
       `/api/search?q=${encodeURIComponent(state.query)}&page=${state.page}`
     );
     if (!append) $('resultsGrid').innerHTML = '';
-    for (const r of results.filter(r18Visible)) $('resultsGrid').appendChild(makeCard(r));
+    const shown = results.filter(r18Visible);
+    for (const r of shown) $('resultsGrid').appendChild(makeCard(r));
     $('moreBtn').hidden = results.length === 0;
-    if (!append && results.length === 0) {
+    if (!append && !shown.length) {
       $('resultsTitle').textContent = 'No results found';
+      renderGridEmpty($('resultsGrid'), 'No results found');
     }
   } catch (e) {
     if (!append) $('resultsGrid').innerHTML = ''; // don't leave skeletons up
@@ -900,6 +972,20 @@ function renderSkeletonCards(grid, count) {
   }
 }
 
+// empty-grid state: shown wherever content filtering (or a fresh search)
+// leaves a grid with nothing in it (local copy, background stripped)
+const EMPTY_IMG = 'empty.png';
+function renderGridEmpty(grid, message) {
+  grid.innerHTML = '';
+  const box = el('div', 'empty-rated');
+  const img = el('img');
+  img.src = EMPTY_IMG;
+  img.alt = '';
+  box.appendChild(img);
+  box.appendChild(el('p', 'empty-rated-text', message || 'Nothing to show here'));
+  grid.appendChild(box);
+}
+
 // small placeholder boxes for the episode-number grid
 function renderSkeletonEps(grid, count) {
   grid.innerHTML = '';
@@ -909,13 +995,15 @@ function renderSkeletonEps(grid, count) {
 function makeCard(r) {
   const card = el('div', 'card');
   card.title = r.title; // native tooltip shows the full name over the clamped title
+  const media = el('div', 'card-media'); // anchors the date badge to the art, not the title
   const img = el('img');
   if (r.poster) {
     img.src = r.poster;
     img.onerror = () => { img.src = `/stream?u=${btoaUrl(r.poster)}`; img.onerror = null; };
   }
   img.loading = 'lazy';
-  card.appendChild(img);
+  media.appendChild(img);
+  card.appendChild(media);
   card.appendChild(el('div', 'card-title', r.title));
   card.addEventListener('click', () => openDetail(r.slug, r.title, r.poster));
   attachFavBtn(card, r);
@@ -935,11 +1023,107 @@ async function loadRecent() {
     $('recentLoading').hidden = true;
     const grid = $('recentGrid');
     grid.innerHTML = '';
-    for (const r of results.filter(r18Visible).slice(0, 30)) grid.appendChild(makeCard(r));
+    const shown = results.filter(r18Visible).slice(0, 30);
+    if (!shown.length) renderGridEmpty(grid, 'Nothing to show right now');
+    else for (const r of shown) grid.appendChild(makeCard(r));
     state.recentLoaded = true;
   } catch {
     section.hidden = true; // best-effort: hide rather than break the home view
   }
+}
+
+/* ---------------- upcoming (Coming soon) ---------------- */
+
+let upcomingData = null; // cached /api/upcoming results
+
+async function loadUpcoming() {
+  try {
+    const { results } = await api('/api/upcoming');
+    upcomingData = results;
+    renderUpcoming();
+  } catch { /* best-effort: the sections simply stay hidden */ }
+}
+
+// re-render both the marquee and the Coming soon grid (also called when the
+// 18+ setting changes)
+function renderUpcoming() {
+  renderUpcomingMarquee();
+  renderUpcomingSection();
+}
+
+function renderUpcomingSection() {
+  const section = $('upcomingSection');
+  const items = (upcomingData || []).filter(r18Visible);
+  if (!items.length) { section.hidden = true; return; }
+  // group by release year — only the current one and the next are shown
+  const yNow = new Date().getFullYear();
+  const byYear = new Map();
+  for (const r of items) {
+    const m = /(\d{4})/.exec(r.date || '');
+    const y = m ? +m[1] : yNow;
+    if (y < yNow || y > yNow + 1) continue;
+    if (!byYear.has(y)) byYear.set(y, []);
+    byYear.get(y).push(r);
+  }
+  const years = [...byYear.keys()].sort((a, b) => a - b);
+  if (!years.length) { section.hidden = true; return; }
+  const wrap = $('upcomingYears');
+  wrap.innerHTML = '';
+  for (const y of years) {
+    const head = el('div', 'year-head');
+    head.appendChild(el('h3', null, String(y)));
+    const slider = el('div', 'slider');
+    for (const r of byYear.get(y)) {
+      const card = makeCard(r);
+      if (r.date) card.querySelector('.card-media').appendChild(el('span', 'date-badge', r.date));
+      slider.appendChild(card);
+    }
+    wrap.appendChild(head);
+    wrap.appendChild(slider);
+  }
+  // "View all" opens the full list, not just the two-year window
+  const all = items.filter((r) => {
+    const m = /(\d{4})/.exec(r.date || '');
+    return !m || +m[1] >= yNow;
+  });
+  const btn = $('upAll');
+  btn.hidden = all.length <= 12;
+  btn.onclick = () => openCollection({ kind: 'list', items: all, title: 'Coming soon' });
+  section.hidden = false;
+}
+
+// top strip on Home: the same shows auto-scrolling; the sequence is built
+// twice so the CSS translateX(-50%) loop is seamless. Favoriting one of these
+// notifies on release day via the regular favorites checker.
+function renderUpcomingMarquee() {
+  const wrap = $('upMarquee');
+  const track = $('upTrack');
+  const items = (upcomingData || []).filter(r18Visible).slice(0, 14);
+  if (!items.length) { wrap.hidden = true; return; }
+  track.innerHTML = '';
+  const build = () => {
+    for (const r of items) {
+      const b = el('button', 'up-item');
+      const img = el('img');
+      if (r.poster) {
+        img.src = r.poster;
+        img.onerror = () => { img.src = `/stream?u=${btoaUrl(r.poster)}`; img.onerror = null; };
+      }
+      img.loading = 'lazy';
+      img.alt = '';
+      b.appendChild(img);
+      const meta = el('span', 'up-meta');
+      meta.appendChild(el('span', 'up-name', r.title));
+      meta.appendChild(el('span', 'up-date', r.date || 'Coming soon'));
+      b.appendChild(meta);
+      b.title = r.title;
+      b.addEventListener('click', () => openDetail(r.slug, r.title, r.poster));
+      track.appendChild(b);
+    }
+  };
+  build();
+  build();
+  wrap.hidden = false;
 }
 
 function btoaUrl(s) {
@@ -967,6 +1151,7 @@ function renderContinue() {
     img.loading = 'lazy';
     card.appendChild(img);
     card.appendChild(el('div', 'card-title', it.title));
+    card.title = it.title; // native tooltip shows the full name over the clamped title
     const bar = el('div', 'resume-bar');
     const fill = el('div');
     fill.style.width = `${Math.min(100, it.pct || 0)}%`;
@@ -1057,20 +1242,77 @@ function renderDetailInfo(d) {
 
   const rows = $('detailMetaRows');
   rows.innerHTML = '';
+  // studios / producers render as buttons when the detail page linked them —
+  // each opens a collection page listing every anime from that company
+  const linkedRow = (label, links) => {
+    const row = el('div', 'meta-row');
+    row.appendChild(el('span', 'meta-key', label));
+    const val = el('span', 'meta-val');
+    links.forEach((l, i) => {
+      if (i) val.appendChild(document.createTextNode(', '));
+      const b = el('button', 'link-btn', l.name);
+      b.title = `All anime by ${l.name}`;
+      b.addEventListener('click', () => openCollection({
+        kind: 'path', path: l.path, title: l.name,
+      }));
+      val.appendChild(b);
+    });
+    row.appendChild(val);
+    return row;
+  };
   const rowsData = [
     ['Japanese', (d.japanese || '').length ? d.japanese : null],
-    ['Studio', d.studios.length ? d.studios.join(', ') : null],
-    ['Producers', d.producers.length ? d.producers.join(', ') : null],
+    ['Studio', d.studioLinks && d.studioLinks.length
+      ? linkedRow('Studio', d.studioLinks)
+      : d.studios.length ? d.studios.join(', ') : null],
+    ['Producers', d.producerLinks && d.producerLinks.length
+      ? linkedRow('Producers', d.producerLinks)
+      : d.producers.length ? d.producers.join(', ') : null],
     ['Status', d.status],
   ];
   for (const [k, v] of rowsData) {
     if (!v) continue;
-    const row = el('div', 'meta-row');
-    row.appendChild(el('span', 'meta-key', k));
-    row.appendChild(el('span', 'meta-val', v));
+    const row = typeof v === 'object' ? v : (() => {
+      const r = el('div', 'meta-row');
+      r.appendChild(el('span', 'meta-key', k));
+      r.appendChild(el('span', 'meta-val', v));
+      return r;
+    })();
     rows.appendChild(row);
   }
   $('detailInfo').hidden = !chipVals.length && !d.synopsis;
+
+  // keep the favorite record current with the show's genres — they feed the
+  // favourites-based recommendations
+  if (isFav(state.slug) && (d.genreSlugs || []).length) {
+    const f = getFavs();
+    if (f[state.slug] && String(f[state.slug].genres) !== String(d.genreSlugs)) {
+      f[state.slug].genres = d.genreSlugs;
+      setFavs(f);
+    }
+  }
+
+  // mobile: synopsis clamps to 3 lines behind a View more toggle — offer the
+  // toggle only when the text actually overflows the clamp. Measured more than
+  // once: a single rAF can run before the view/fonts have settled, and a
+  // 0-height layout reads as "no overflow", hiding the toggle for good.
+  const syn = $('detailSynopsis');
+  const st = $('synopsisToggle');
+  syn.classList.add('clamped');
+  st.textContent = 'View more';
+  requestAnimationFrame(syncSynopsisToggle);
+  setTimeout(syncSynopsisToggle, 300);
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(syncSynopsisToggle);
+}
+
+// show the toggle when the clamped synopsis overflows; keep it while expanded
+// ("View less"), and hide it when there's nothing to expand
+function syncSynopsisToggle() {
+  const syn = $('detailSynopsis');
+  const st = $('synopsisToggle');
+  if (syn.hidden) { st.hidden = true; return; }
+  const expanded = !syn.classList.contains('clamped');
+  st.hidden = !expanded && syn.scrollHeight <= syn.clientHeight + 2;
 }
 
 async function loadDetailInfo() {
@@ -1079,33 +1321,142 @@ async function loadDetailInfo() {
     const d = await api(`/api/detail?slug=${encodeURIComponent(slug)}`);
     if (state.slug === slug) {
       renderDetailInfo(d);
+      renderRelated(d);
       renderRecommendations(d);
     }
   } catch { /* details are best-effort */ }
 }
 
-// up to 5 similar shows, picked by the show's own genres (primary genre first,
-// secondary genre fills any gap). Sorted by most-watched within that genre —
-// trending/mal_score return niche catalog picks; most_viewed is recognizable.
+/* ---- seasons & movies (the source's "Related Anime" block) ---- */
+
+function renderRelated(d) {
+  const section = $('relSection');
+  const items = (d.related || [])
+    .filter((r) => r.slug !== state.slug)
+    .filter(r18Visible);
+  state.related = items;
+  if (!items.length) { section.hidden = true; return; }
+  // horizontal slider — every related entry fits without a "view all" hop
+  const slider = $('relSlider');
+  slider.innerHTML = '';
+  for (const r of items) slider.appendChild(makeCard(r));
+  section.hidden = false;
+}
+
+/* ---- collection pages ----
+   One generic grid page for two kinds of listing: a studio / producer path
+   (paginated, served by /api/collection) or a static list (a show's full
+   seasons & movies from the "View all" button). */
+
+const collection = { seq: 0, path: null, page: 1, totalPages: 1, title: '' };
+
+async function openCollection(opts) {
+  const fromView = state.view; // capture before the view changes
+  pushHist(() => restoreView(fromView)); // trail: back returns to where we came from
+  collection.seq++;
+  if (opts.kind === 'list') {
+    collection.path = null;
+    $('collectionTitle').textContent = opts.title;
+    const grid = $('collectionGrid');
+    grid.innerHTML = '';
+    const items = opts.items.filter(r18Visible);
+    if (!items.length) renderGridEmpty(grid, 'Nothing to show here');
+    else for (const r of items) grid.appendChild(makeCard(r));
+    $('collectionPager').hidden = true;
+    showView('collectionView');
+  } else {
+    collection.path = opts.path;
+    collection.title = opts.title;
+    collection.page = 1;
+    showView('collectionView');
+    await loadCollection();
+  }
+}
+
+async function loadCollection() {
+  const seq = ++collection.seq;
+  renderSkeletonCards($('collectionGrid'), 12);
+  try {
+    const { results, totalPages, page } = await api(
+      `/api/collection?path=${encodeURIComponent(collection.path)}&page=${collection.page}`
+    );
+    if (seq !== collection.seq) return;
+    collection.page = page;
+    collection.totalPages = totalPages;
+    const grid = $('collectionGrid');
+    grid.innerHTML = '';
+    const shown = results.filter(r18Visible);
+    if (!shown.length) renderGridEmpty(grid, 'Nothing to show here');
+    else for (const r of shown) grid.appendChild(makeCard(r));
+    $('collectionTitle').textContent = `${collection.title} anime`;
+    $('colPageLabel').textContent = totalPages > 1 ? `Page ${page} of ${totalPages}` : '';
+    $('colPrev').disabled = page <= 1;
+    $('colNext').disabled = page >= totalPages;
+    $('collectionPager').hidden = totalPages <= 1;
+  } catch (e) {
+    if (seq === collection.seq) toast('Could not load this page: ' + e.message, true);
+  }
+}
+
+$('colPrev').addEventListener('click', () => {
+  if (collection.page > 1) { collection.page -= 1; loadCollection(); }
+});
+$('colNext').addEventListener('click', () => {
+  if (collection.page < collection.totalPages) { collection.page += 1; loadCollection(); }
+});
+
+/* ---- recommendations ----
+   Six picks always on screen, driven by a genre profile: the current show's
+   genres plus (weighted 2×) the genres of the user's favorites. Anything
+   already favorited never shows up. Legacy favorite records carry no genres —
+   the most recent few are backfilled from /api/detail (server-cached). */
 let recSeq = 0;
 async function renderRecommendations(d) {
   const seq = ++recSeq;
   const section = $('recSection');
   section.hidden = true;
-  const slugs = (d.genreSlugs || []).filter((g) => GENRES.includes(g));
-  if (!slugs.length) return;
-  const picked = [];
   const seen = new Set([state.slug]);
+  for (const s of Object.keys(getFavs())) seen.add(s);
+
+  const genreWeight = new Map();
+  const addGenre = (g, w) => {
+    if (GENRES.includes(g)) genreWeight.set(g, (genreWeight.get(g) || 0) + w);
+  };
+  (d.genreSlugs || []).forEach((g) => addGenre(g, 1));
+
+  const favs = Object.entries(getFavs())
+    .map(([slug, v]) => ({ slug, ...v }))
+    .sort((a, b) => (b.ts || 0) - (a.ts || 0));
+  const missing = favs.filter((f) => !(f.genres || []).length).slice(0, 4);
+  await Promise.all(missing.map(async (f) => {
+    try {
+      const det = await api(`/api/detail?slug=${encodeURIComponent(f.slug)}`);
+      const gs = det.genreSlugs || [];
+      if (gs.length) {
+        const all = getFavs();
+        if (all[f.slug]) { all[f.slug].genres = gs; setFavs(all); }
+        gs.forEach((g) => addGenre(g, 2));
+      }
+    } catch { /* one favorite failing must not sink the section */ }
+  }));
+  favs.forEach((f) => (f.genres || []).forEach((g) => addGenre(g, 2)));
+  if (seq !== recSeq || state.view !== 'detailView') return;
+
+  const genres = [...genreWeight.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map((e) => e[0])
+    .slice(0, 4);
+  const picked = [];
   const take = (results) => {
     for (const r of results.filter(r18Visible)) {
-      if (picked.length >= 5) break;
+      if (picked.length >= 6) break;
       if (seen.has(r.slug)) continue;
       seen.add(r.slug);
       picked.push(r);
     }
   };
-  for (const g of slugs.slice(0, 2)) {
-    if (picked.length >= 5) break;
+  for (const g of genres) {
+    if (picked.length >= 6) break;
     try {
       const { results } = await api(`/api/browse?genre=${encodeURIComponent(g)}&sort=most_viewed&page=1`);
       if (seq !== recSeq || state.view !== 'detailView') return; // user moved on
@@ -1132,6 +1483,14 @@ $('favBtn').addEventListener('click', () => {
 });
 
 async function openDetail(slug, title, poster, onReady) {
+  // trail: hopping to a show from anywhere (or from another detail page via
+  // recommendations) is a forward hop — back returns to what was on screen
+  const from = { view: state.view, slug: state.slug, title: state.title, poster: state.poster };
+  if (from.view === 'detailView' && from.slug && from.slug !== slug) {
+    pushHist(() => openDetail(from.slug, from.title, from.poster));
+  } else if (from.view !== 'detailView') {
+    pushHist(() => restoreView(from.view));
+  }
   state.slug = slug;
   state.title = title;
   state.poster = poster;
@@ -1141,17 +1500,15 @@ async function openDetail(slug, title, poster, onReady) {
     b.classList.toggle('active', b.dataset.type === state.type);
   }
   $('detailTitle').textContent = title;
+  $('detailTitle').title = title; // desktop hover shows a long clamped title in full
   $('detailPoster').src = poster || '';
   updateDetailFav();
   renderDetailInfo(null); // hide stale info while loading
   $('recSection').hidden = true; // ...and stale recommendations
+  $('relSection').hidden = true; // ...and stale seasons & movies
   loadDetailInfo();
   $('epCount').textContent = '';
-  // remember the origin for the detail "Back" button — set here (the only
-  // place a *fresh* detail page opens), not in showView: hops like
-  // player→detail on playback error must not overwrite the real origin
-  // (e.g. Browse), or Back would wrongly fall through to Home
-  if (state.view !== 'detailView') state.prevView = state.view;
+  // the back trail (pushHist above) now owns the "Back" button's destination
   showView('detailView');
   $('epLoading').hidden = true;
   renderSkeletonEps($('epGrid'), 12);
@@ -1184,12 +1541,13 @@ function renderEpisodes() {
   const grid = $('epGrid');
   grid.innerHTML = '';
   const prog = getJSON()[state.slug] || {};
+  const watched = prog.watched || [];
   for (const ep of state.episodes) {
     const btn = el('button', 'ep-btn', ep.num);
-    if (ep.num === String(state.epNum)) {
-      btn.classList.add('current');
-    } else if (Number(ep.num) < Number(prog.epNum)) {
-      // already watched (before the resume point): check mark + dimmed style
+    if (ep.num === String(state.epNum)) btn.classList.add('current');
+    // the check is independent of "current" — the episode you just played is
+    // both, and hiding its check made it look unwatched
+    if (watched.includes(String(ep.num))) {
       btn.classList.add('watched');
       btn.textContent = `✓ ${ep.num}`;
     }
@@ -1203,34 +1561,10 @@ function renderEpisodes() {
   }
 }
 
+// every back button (detail, player, collection) unwinds the same trail the
+// Android hardware back walks
 document.querySelectorAll('[data-back]').forEach((b) => {
-  b.addEventListener('click', () => {
-    if (b.dataset.back === 'detail') {
-      stopPlayback();
-      showView('detailView');
-      renderEpisodes();
-      return;
-    }
-    // detail "Back" returns to wherever the show was opened from
-    const target = state.prevView;
-    if (target === 'favView') {
-      renderFavorites();
-      showView('favView');
-    } else if (target === 'browseView') {
-      // keep the browse results exactly as they were
-      showView('browseView');
-    } else {
-      // keep any active search results on screen, restore the home sections
-      showView('homeView');
-      renderContinue();
-      if (!$('resultsSection').hidden) {
-        $('recentSection').hidden = true;
-      } else {
-        $('recentSection').hidden = false;
-        loadRecent();
-      }
-    }
-  });
+  b.addEventListener('click', () => goBack());
 });
 
 /* ---------------- player ---------------- */
@@ -1247,19 +1581,40 @@ function stopPlayback() {
   for (const t of [...video.querySelectorAll('track')]) t.remove();
 }
 
+// any playthrough marks the episode watched — recorded the moment playback
+// actually starts, so a few seconds of watching still counts
+function markWatched() {
+  if (!state.slug || !state.epNum) return;
+  const all = getJSON();
+  const prev = all[state.slug] || {};
+  const watched = new Set(prev.watched || []);
+  watched.add(String(state.epNum));
+  all[state.slug] = {
+    ...prev,
+    watched: [...watched].sort((a, b) => Number(a) - Number(b)),
+  };
+  setJSON(all);
+}
+
 function saveProgress(final = false) {
   if (!state.slug || !state.epNum) return;
   const video = $('video');
   if (!video.duration || isNaN(video.duration)) return;
   const all = getJSON();
+  const prev = all[state.slug] || {};
+  const pct = Math.round((video.currentTime / video.duration) * 100);
+  // any playthrough marks the episode as watched — finished or not
+  const watched = new Set(prev.watched || []);
+  watched.add(String(state.epNum));
   all[state.slug] = {
     title: state.title,
     poster: state.poster,
     epNum: state.epNum,
     t: video.currentTime,
     dur: video.duration,
-    pct: Math.round((video.currentTime / video.duration) * 100),
+    pct,
     ts: Date.now(),
+    watched: [...watched].sort((a, b) => Number(a) - Number(b)),
   };
   setJSON(all);
   if (final) {
@@ -1270,13 +1625,20 @@ function saveProgress(final = false) {
   }
 }
 
-async function startPlayback(epNum, type) {
+// opts.push: false for in-player hops (auto-next/hot swap) — those
+// must not stack trail entries
+async function startPlayback(epNum, type, opts = {}) {
   stopPlayback();
   state.epNum = String(epNum);
   state.type = type;
+  syncSwapToggle();
+  if (opts.push !== false) {
+    pushHist(() => { stopPlayback(); showView('detailView'); renderEpisodes(); });
+  }
   const playId = (state.playId = (state.playId || 0) + 1);
   showView('playerView');
-  $('playerTitle').textContent = `${state.title} — EP ${epNum} (${type.toUpperCase()})`;
+  $('playerTitle').textContent = state.title;
+  $('playerEp').textContent = `EP ${epNum} (${type.toUpperCase()})`;
   $('playerLoading').hidden = false;
   $('skipIntroBtn').hidden = true;
   $('providerLabel').textContent = '';
@@ -1412,13 +1774,14 @@ function setupWatchers(src) {
   state.progressTimer = setInterval(() => {
     if (!video.paused) saveProgress();
   }, 5000);
+  video.addEventListener('play', markWatched, { once: true });
   video.addEventListener('ended', () => {
     saveProgress(true);
     if ($('autoNextBtn').classList.contains('on')) {
       const next = state.episodes.find(
         (e) => parseFloat(e.num) > parseFloat(state.epNum)
       );
-      if (next) startPlayback(next.num, state.type);
+      if (next) startPlayback(next.num, state.type, { push: false });
     }
   }, { once: true });
 
@@ -1443,27 +1806,35 @@ $('playerCancelBtn').addEventListener('click', () => {
   renderEpisodes();
 });
 
-$('nextEpBtn').addEventListener('click', () => {
-  const next = state.episodes.find((e) => parseFloat(e.num) > parseFloat(state.epNum));
-  if (next) startPlayback(next.num, state.type);
-  else toast('No next episode');
-});
-$('prevEpBtn').addEventListener('click', () => {
-  const prev = state.episodes.filter((e) => parseFloat(e.num) < parseFloat(state.epNum)).pop();
-  if (prev) startPlayback(prev.num, state.type);
-  else toast('No previous episode');
+/* ---- sub/dub hot swap ----
+   Re-resolves the current episode in the other audio track; saveProgress ran
+   just before, so startPlayback resumes at the position we left. */
+function syncSwapToggle() {
+  document.querySelectorAll('#swapToggle button').forEach((x) =>
+    x.classList.toggle('active', x.dataset.type === state.type));
+}
+document.querySelectorAll('#swapToggle button').forEach((b) => {
+  b.addEventListener('click', () => {
+    const type = b.dataset.type;
+    if (!state.epNum || type === state.type || state.view !== 'playerView') return;
+    saveProgress(); // remember the position in the outgoing track
+    state.type = type;
+    syncSwapToggle();
+    const p = prefs(); p.lastType = type; setPrefs(p);
+    startPlayback(state.epNum, type, { push: false });
+  });
 });
 
 $('autoNextBtn').addEventListener('click', (e) => {
   const btn = e.currentTarget;
   const on = !btn.classList.contains('on');
   btn.classList.toggle('on', on);
-  btn.textContent = `Auto-next: ${on ? 'ON' : 'OFF'}`;
+  btn.textContent = `Auto ${on ? 'ON' : 'OFF'}`; // the .on class also colors the border
   const p = prefs(); p.autoNext = on; setPrefs(p);
 });
 if (prefs().autoNext) {
   $('autoNextBtn').classList.add('on');
-  $('autoNextBtn').textContent = 'Auto-next: ON';
+  $('autoNextBtn').textContent = 'Auto ON';
 }
 
 /* ---------------- settings ---------------- */
@@ -1499,12 +1870,11 @@ defTypeSel.addEventListener('change', () => {
   toast(`Default audio: ${defTypeSel.value.toUpperCase()}`);
 });
 
-const r18Sel = $('r18Sel');
-r18Sel.value = prefs().showR18 ? 'show' : 'hide';
 r18Sel.addEventListener('change', () => {
   const p = prefs();
   p.showR18 = r18Sel.value === 'show';
   setPrefs(p);
+  rebuildRatingFilter(); // R+/Rx options exist only while 18+ is shown
   const hidden = p.showR18 ? 'now shown' : 'now hidden';
   toast(`18+ content ${hidden} — refreshing this view`);
   // re-apply to whatever is on screen right now
@@ -1515,6 +1885,7 @@ r18Sel.addEventListener('change', () => {
     if (!$('resultsSection').hidden && state.query) loadResults(false);
     else loadRecent();
   }
+  renderUpcoming(); // the Coming soon section + marquee re-filter too
 });
 
 const pushNotifSel = $('pushNotifSel');
@@ -1535,7 +1906,6 @@ document.addEventListener('keydown', (e) => {
   else if (e.code === 'ArrowRight') video.currentTime += 10;
   else if (e.code === 'ArrowLeft') video.currentTime -= 10;
   else if (e.code === 'KeyF') document.fullscreenElement ? document.exitFullscreen() : $('playerWrap').requestFullscreen();
-  else if (e.code === 'KeyN') $('nextEpBtn').click();
 });
 
 /* ---------------- version + in-app updates ---------------- */
@@ -1626,6 +1996,58 @@ $('checkUpdateBtn').addEventListener('click', async () => {
   pollUpdate();
 });
 
+/* ---- first-launch terms & conditions ----
+   Nothing in the app is usable until these are accepted once; acceptance is
+   persisted in prefs (and mirrored to the backup file), so it never asks again. */
+
+let tosDeclined = false;
+$('tosAccept').addEventListener('click', () => {
+  const p = prefs();
+  p.tosAccepted = true;
+  setPrefs(p);
+  $('tosOverlay').hidden = true;
+  toast('Welcome to AniBrowser');
+});
+$('tosDecline').addEventListener('click', () => {
+  if (tosDeclined) return;
+  tosDeclined = true;
+  const m = el('p', 'hint', 'AniBrowser can only be used after accepting these terms. Close the app, or come back and tap “I agree” when you are ready.');
+  m.style.marginTop = '10px';
+  m.style.textAlign = 'center';
+  $('tosPanel').appendChild(m);
+  $('tosDecline').disabled = true;
+});
+function showTosGate() {
+  if (prefs().tosAccepted) return;
+  $('tosOverlay').hidden = false;
+}
+
+/* ---- settings: download my data ---- */
+
+$('exportBtn').addEventListener('click', async () => {
+  const btn = $('exportBtn');
+  btn.disabled = true;
+  try {
+    await saveBackup(); // flush the latest state into the backup first
+    const { path } = await api('/api/export');
+    toast(`Data saved to ${path}`);
+  } catch (e) {
+    toast('Export failed: ' + e.message, true);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+/* ---- synopsis clamp toggle ---- */
+$('synopsisToggle').addEventListener('click', () => {
+  const clamped = $('detailSynopsis').classList.toggle('clamped');
+  $('synopsisToggle').textContent = clamped ? 'View more' : 'View less';
+});
+// a resize changes how many lines the synopsis needs — re-decide the toggle
+window.addEventListener('resize', () => {
+  if (!$('detailView').hidden) syncSynopsisToggle();
+});
+
 /* ---------------- init ---------------- */
 
 let splashGone = false;
@@ -1644,12 +2066,14 @@ function hideSplash() {
   // failsafe: never trap the user behind the splash
   setTimeout(hideSplash, 15000);
   await restoreFromBackup(); // must run before anything reads prefs/favorites
+  showTosGate(); // first launch only — overlays the boot splash until accepted
   applySidebar();
   initBrowseUI();
   updateFavCount();
   renderNotifPanel(); // restore badge/panel state saved before the last close
   renderContinue();
   await loadRecent(); // home is ready once the recently-updated grid lands
+  loadUpcoming(); // marquee + Coming soon grid (best-effort, cached 30 min)
   hideSplash();
   loadVersion();
   document.querySelector('.side-item[data-nav="home"]').classList.add('active');

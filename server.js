@@ -23,6 +23,8 @@ let dataDir = null; // Documents/AniBrowser — set by start(); null in plain-no
 const BACKUP_FILE = 'anibrowser-data.json';
 const RECENT_TTL = 5 * 60 * 1000;
 let recent = null; // { t, results }
+const UPCOMING_TTL = 30 * 60 * 1000;
+let upcoming = null; // { t, page, results }
 const MIME = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
@@ -272,6 +274,49 @@ async function route(req, res) {
       recent = { t: now, results: await scraper.recentlyUpdated(1) };
     }
     return sendJson(res, 200, { results: recent.results });
+  }
+
+  if (p === '/api/upcoming') {
+    // not-yet-aired shows with their premiere dates (top-upcoming page);
+    // longer TTL than /recent since the list changes slowly
+    const page = parseInt(q.get('page') || '1', 10) || 1;
+    const now = Date.now();
+    if (!upcoming || upcoming.page !== page || now - upcoming.t > UPCOMING_TTL) {
+      upcoming = { t: now, page, results: await scraper.upcoming(page) };
+    }
+    return sendJson(res, 200, { results: upcoming.results });
+  }
+
+  if (p === '/api/collection') {
+    // studio / producer listing pages, e.g. /studios/dle
+    const cpath = q.get('path') || '';
+    if (!/^\/(studios|producers)\/[a-z0-9-]+$/i.test(cpath)) {
+      return sendJson(res, 400, { error: 'Bad path' });
+    }
+    const page = parseInt(q.get('page') || '1', 10) || 1;
+    try {
+      return sendJson(res, 200, await scraper.browsePath(cpath, page));
+    } catch (e) {
+      return sendJson(res, 502, { error: String(e.message || e) });
+    }
+  }
+
+  if (p === '/api/export' && req.method === 'GET') {
+    // write everything we hold about the user to a dated JSON file they can
+    // grab from their AniBrowser data folder (the WebView can't trigger
+    // browser downloads, so the server materializes the file instead)
+    await backupReady;
+    if (!backupDir) return sendJson(res, 500, { error: 'Data folder unavailable' });
+    const payload = (await readBackup()) || {
+      prefs: {}, favorites: {}, progress: {}, savedAt: null,
+    };
+    payload.exportedAt = new Date().toISOString();
+    const file = path.join(
+      backupDir,
+      `anibrowser-export-${new Date().toISOString().slice(0, 10)}.json`
+    );
+    await fsp.writeFile(file, JSON.stringify(payload, null, 2));
+    return sendJson(res, 200, { path: file, filename: path.basename(file) });
   }
 
   if (p === '/api/detail') {
