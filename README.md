@@ -11,10 +11,13 @@ Personal desktop app for browsing and streaming anime — a GUI equivalent of
 ### Android (APK)
 
 1. Go to the [Releases page](https://github.com/RichardPersaud/AniBrowser/releases)
-2. Under the latest release, download **AniBrowser-v1.0.17.apk** from Assets
+2. Under the latest release, download **AniBrowser-v1.0.18.apk** from Assets
    (direct link:
-   [AniBrowser-v1.0.17.apk](https://github.com/RichardPersaud/AniBrowser/releases/download/v1.0.17/AniBrowser-v1.0.17.apk))
+   [AniBrowser-v1.0.18.apk](https://github.com/RichardPersaud/AniBrowser/releases/download/v1.0.18/AniBrowser-v1.0.18.apk))
 3. Open the APK and allow "install unknown apps" when Android asks
+   — **if you installed v1.0.17 or older, uninstall that first** (older
+   releases were signed with a different key; v1.0.18 and newer install
+   straight over each other)
 
 The APK is a full port of the desktop app for phones — same UI, same scraper,
 same sources, with a bundled Node.js runtime inside the app (no extra
@@ -28,9 +31,9 @@ for updates every 6 hours and offers a one-tap install of new APKs.
 ### Windows
 
 1. Go to the [Releases page](https://github.com/RichardPersaud/AniBrowser/releases)
-2. Under the latest release, download **AniBrowser.Setup.x.y.z.exe** from Assets
-   (direct link for v1.0.13:
-   [AniBrowser.Setup.1.0.13.exe](https://github.com/RichardPersaud/AniBrowser/releases/download/v1.0.13/AniBrowser.Setup.1.0.13.exe))
+2. Under the latest release, download **AniBrowser-Setup-x.y.z.exe** from Assets
+   (direct link for v1.0.18:
+   [AniBrowser-Setup-1.0.18.exe](https://github.com/RichardPersaud/AniBrowser/releases/download/v1.0.18/AniBrowser-Setup-1.0.18.exe))
 3. Run the installer — standard setup with a desktop shortcut
 
 **SmartScreen note:** the installer isn't code-signed, so Windows may warn
@@ -55,6 +58,12 @@ installer once:
   and published with each release; `electron-updater`'s GitHub provider
   handles version checks, downloads and the silent install.
 
+On Android the same flow works a little differently (sideloaded APKs can't
+silently replace themselves): the bundled server checks the newest release
+for an `.apk` asset, the banner downloads it, and **Install update** hands it
+to Android's standard installer prompt. Android updates need the release to
+be *published* (drafts are invisible to the check) and to carry the APK asset.
+
 ## Use
 
 1. Type in the search bar, pick a result
@@ -73,8 +82,9 @@ installer once:
 7. ♥ on any poster (or the button on the detail page) adds a show to Favorites;
    ✕ on a continue-watching card (or "Clear history") removes it from the
    watch history
-8. Already-watched episodes are marked with a ✓ in the episode list; the one
-   you stopped on is highlighted as the resume point
+8. Episodes you've played are marked with a ✓ in the episode list (starting
+   playback is enough — no need to finish); the one you stopped on is
+   highlighted as the resume point
 9. 🔔 bell in the top bar: when a favorited show releases new episodes, it
    lands in the notifications panel (badge + toast). Favorites are polled
    every 10 minutes; "Mark all seen" dismisses them. Notification state is
@@ -92,7 +102,7 @@ installer once:
    `%USERPROFILE%\AniBrowser` if Documents is OneDrive-synced and stalls)
    so updates and reinstalls don't reset them
 
-Keyboard: `Space` play/pause · `←/→` seek 10s · `F` fullscreen · `N` next episode
+Keyboard: `Space` play/pause · `←/→` seek 10s · `F` fullscreen
 
 ## How it works
 
@@ -126,6 +136,30 @@ Releasing a new version (so installed apps auto-update):
 $env:GH_TOKEN = "<github PAT with repo scope>"   # PowerShell
 npm run release
 ```
+
+#### Android build
+
+The APK is built from `expo-app/android` (not the repo root):
+
+```
+# 1. bump the version in three places:
+#      package.json                     -> "version"
+#      expo-app/app.json                -> expo.version + android.versionCode (increment)
+#      expo-app/android/app/build.gradle -> versionCode + versionName (hardcoded)
+# 2. re-zip the web assets (ui/, server.js, scraper.js changed? always run):
+cd expo-app && bash scripts/sync-node.sh
+# 3. build (needs local.properties with sdk.dir, and the release keystore
+#    configured via android/app/keystore.properties — both gitignored):
+cd android && ./gradlew assembleRelease
+# 4. verify the embedded zip isn't stale before shipping:
+unzip -l app/build/outputs/apk/release/app-release.apk | grep .zip
+```
+
+Signing: releases are signed with the keystore in `~/.anibrowser-keys`
+(referenced by `expo-app/android/app/keystore.properties`, gitignored — never
+commit or lose it; losing it means every install must uninstall first).
+Users on pre-1.0.18 releases must uninstall before installing 1.0.18+
+because those shipped with the debug key.
 
 electron-builder uploads a **draft** release containing the exe, blockmap and
 `latest.yml`. Publish the draft (GitHub web → Releases → Publish, or

@@ -10,6 +10,7 @@ probe/
 .probe-data/
 suggest.json
 smoke.log
+.imgtool/
 
 # local build artifacts (the installable APK ships via GitHub Releases instead)
 *.apk
