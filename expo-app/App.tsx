@@ -92,15 +92,12 @@ async function bootNode(): Promise<number> {
     if (!zipUri) throw lastErr;
     zipPath = zipUri.replace(/^file:\/\//, '');
   } else {
-    // release: the zip is embedded as an obfuscated android_res resource
-    // (e.g. res/7Y.zip), not a real file — downloadAsync copies it into the
-    // app cache where Node can open it from the filesystem
-    await asset.downloadAsync();
-    const copied = asset.localUri ?? asset.uri;
-    if (!copied.startsWith('file://')) {
-      throw new Error(`zip asset did not materialize to a file: ${copied}`);
-    }
-    zipPath = decodeURIComponent(copied.replace(/^file:\/\//, ''));
+    // release: the zip ships as a raw android asset (android/app/src/main/assets,
+    // kept in sync by scripts/sync-node.sh). expo-asset's on-device cache never
+    // revalidates across app updates — after the v1.1.2 upgrade it kept serving
+    // the previous release's zip, so the app ran the old server forever — so
+    // bypass it: the Kotlin side copies the asset fresh and CRC-stamps it
+    zipPath = 'asset:nodejs-project.zip';
   }
   return AniBrowserNode.startNode(zipPath, dataDir);
 }

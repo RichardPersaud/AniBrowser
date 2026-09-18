@@ -46,7 +46,7 @@ class AniBrowserNodeModule : Module() {
                 try {
                     val marker = File(dataDir, "anibrowser-port.json")
                     val projectDir = File(dataDir, "nodejs-project")
-                    val zip = File(zipPath)
+                    val zip = resolveZip(zipPath)
 
                     val running = existingPort(marker)
                     if (running != null) {
@@ -186,14 +186,65 @@ class AniBrowserNodeModule : Module() {
 
     private fun pidAlive(pid: Int) = pid > 0 && File("/proc/$pid").exists()
 
+    /**
+     * Release builds pass "asset:<name>" — the zip ships as a raw Android asset.
+     * expo-asset's on-device cache never revalidates across app updates (after
+     * the v1.1.2 upgrade it kept serving the previous release's zip, so the app
+     * ran the old server forever), so copy the asset ourselves. The copy is
+     * stamped with its CRC so a changed APK swaps it in; an unchanged asset
+     * reuses the cached copy (CRC scan only, no rewrite).
+     */
+    private fun resolveZip(zipPath: String): File {
+        if (!zipPath.startsWith("asset:")) return File(zipPath)
+        val name = zipPath.removePrefix("asset:")
+        val ctx = appContext.reactContext ?: throw IllegalStateException("no react context")
+        val cache = File(ctx.cacheDir, name)
+        val stamp = File(ctx.cacheDir, "$name.stamp")
+        val tmp = File(ctx.cacheDir, "$name.tmp")
+        val crc = java.util.zip.CRC32()
+        ctx.assets.open(name).use { input ->
+            tmp.outputStream().use { out ->
+                val buf = ByteArray(64 * 1024)
+                while (true) {
+                    val n = input.read(buf)
+                    if (n < 0) break
+                    crc.update(buf, 0, n)
+                    out.write(buf, 0, n)
+                }
+            }
+        }
+        val sig = "${crc.value}:${tmp.length()}"
+        val reusable = try { stamp.readText() == sig && cache.exists() } catch (_: Exception) { false }
+        if (reusable) {
+            tmp.delete()
+            return cache
+        }
+        if (cache.exists() && !cache.delete()) throw IllegalStateException("cannot replace $cache")
+        if (!tmp.renameTo(cache)) throw IllegalStateException("rename failed for $cache")
+        stamp.writeText(sig)
+        return cache
+    }
+
+    private fun zipSig(zip: File): String {
+        val crc = java.util.zip.CRC32()
+        zip.inputStream().use { input ->
+            val buf = ByteArray(64 * 1024)
+            while (true) {
+                val n = input.read(buf)
+                if (n < 0) break
+                crc.update(buf, 0, n)
+            }
+        }
+        return "${crc.value}:${zip.length()}"
+    }
+
     private fun needsExtract(zip: File, dataDir: File): Boolean {
         val stamp = File(dataDir, "nodejs-project.zip.stamp")
-        val sig = "${zip.length()}"
-        return try { stamp.readText() != sig } catch (_: Exception) { true }
+        return try { stamp.readText() != zipSig(zip) } catch (_: Exception) { true }
     }
 
     private fun stampExtracted(zip: File, dataDir: File) {
-        File(dataDir, "nodejs-project.zip.stamp").writeText("${zip.length()}")
+        File(dataDir, "nodejs-project.zip.stamp").writeText(zipSig(zip))
     }
 
     /** Unzip into a temp dir (stripping the top-level folder), then atomically swap into place. */
