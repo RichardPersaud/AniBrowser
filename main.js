@@ -6,6 +6,9 @@ const { start } = require('./server');
 const { initUpdater } = require('./updater');
 
 app.setAppUserModelId('io.local.anibrowser');
+// rebrand 1.1.0 (AniBrowser -> AniNinja): Electron derives userData from productName,
+// so pin it to the old folder or the WebView's localStorage (favorites/history) resets
+app.setPath('userData', path.join(app.getPath('appData'), 'AniBrowser'));
 Menu.setApplicationMenu(null);
 
 // last-resort safety net: a streaming app sees constant aborted/failed I/O;
@@ -24,7 +27,7 @@ async function createWindow(port) {
     minWidth: 940,
     minHeight: 600,
     backgroundColor: '#0b0e14',
-    title: 'AniBrowser',
+    title: 'AniNinja',
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,

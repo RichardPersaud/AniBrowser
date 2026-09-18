@@ -45,8 +45,35 @@ function updaterStatus() {
   return status;
 }
 
+const GH_LATEST =
+  'https://api.github.com/repos/RichardPersaud/AniBrowser/releases/latest';
+
+// Dev builds can't self-update (electron-updater needs an installed app), but
+// the version check can still run for real: read the latest GitHub release and
+// report it. `external: true` tells the UI to link out instead of offering a
+// self-download.
+async function checkGithub() {
+  const res = await fetch(GH_LATEST, {
+    headers: { 'User-Agent': 'AniNinja-update-check', Accept: 'application/vnd.github+json' },
+    signal: AbortSignal.timeout(15000),
+  });
+  if (!res.ok) throw new Error(`GitHub API HTTP ${res.status}`);
+  const j = await res.json();
+  const latest = String(j.tag_name || '').replace(/^v/i, '');
+  if (!latest) throw new Error('Latest release has no version tag');
+  if (latest !== app.getVersion()) {
+    status = { state: 'available', version: latest, progress: 0, error: null, external: true };
+  } else {
+    status = { state: 'idle', version: null, progress: 0, error: null };
+  }
+  return status;
+}
+
 async function updaterAction(action) {
-  if (!app.isPackaged) throw new Error('Auto-update is disabled in dev mode');
+  if (!app.isPackaged) {
+    if (action === 'check') return checkGithub();
+    throw new Error("Dev build can't self-update — get the latest release from GitHub");
+  }
   if (action === 'check') {
     const r = await autoUpdater.checkForUpdates();
     const v = r && r.update && r.update.version;

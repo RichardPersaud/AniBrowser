@@ -13,6 +13,21 @@
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
+/* page scrollbars: themed to the blue-green accent, same look as the card
+   sliders' horizontal bar (border + background-clip keeps the thumb slim) */
+::-webkit-scrollbar { width: 10px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--accent-dim);
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--accent);
+  background-clip: padding-box;
+}
+
 /* the hidden attribute must always win, even over display:flex rules */
 [hidden] { display: none !important; }
 
@@ -37,12 +52,12 @@ body {
   flex-shrink: 0;
 }
 #brand {
-  font-size: 20px;
-  font-weight: 700;
-  letter-spacing: 0.5px;
+  /* logo mark in place of the text wordmark */
+  display: flex;
+  align-items: center;
   white-space: nowrap;
 }
-#brand span { color: var(--accent); }
+#brand img { height: 44px; width: auto; display: block; }
 #searchForm {
   flex: 1;
   max-width: 560px;
@@ -598,14 +613,50 @@ h2 { font-size: 16px; margin: 18px 0 12px; color: var(--muted); font-weight: 600
 }
 .back-btn:hover { color: var(--text); border-color: var(--accent-dim); }
 
+/* ---- detail hero: the show's own poster, blurred, behind the head ---- */
+#detailHero {
+  position: relative;
+  /* full bleed: cancel the section's padding, then re-apply it inside so the
+     banner reaches the window edges like a streaming-site hero */
+  margin: -20px -24px 10px;
+  padding: 20px 24px 12px;
+  overflow: hidden;
+}
+#detailHero::before {
+  content: '';
+  position: absolute;
+  inset: -30px;               /* oversize so the blur doesn't fade at the edges */
+  background-image: var(--detail-bg, none);
+  background-size: cover;
+  background-position: center 25%;
+  filter: blur(22px) brightness(0.45) saturate(1.15);
+  z-index: 0;
+}
+/* soften the banner's bottom edge into the page background */
+#detailHero::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 70px;
+  background: linear-gradient(to bottom, transparent, var(--bg));
+  z-index: 0;
+  pointer-events: none;
+}
+#detailHero > * { position: relative; z-index: 1; }
+
 #detailGrid { display: flex; gap: 22px; margin-bottom: 10px; }
 #detailPoster {
-  width: 160px;
+  width: 220px;
   aspect-ratio: 283 / 400;
   object-fit: cover;
   border-radius: var(--radius);
   background: var(--bg3);
   flex-shrink: 0;
+  /* opt out of the flex row's align-items:stretch — stretched to the synopsis
+     block's height, the 160px poster renders skinny and cover-cropped */
+  align-self: flex-start;
 }
 #detailMeta { flex: 1; min-width: 0; }
 #detailTitle {
@@ -770,8 +821,11 @@ h2 { font-size: 16px; margin: 18px 0 12px; color: var(--muted); font-weight: 600
 }
 #playerBottom { order: 3; }
 #video {
-  max-width: 100%;
-  max-height: 100%;
+  /* fill the stage: the element spans the whole video area and object-fit
+     letterboxes the stream inside it, so low-res sources still scale up to
+     the window instead of rendering small and centered */
+  width: 100%;
+  height: 100%;
   object-fit: contain;
   background: #000;
 }
@@ -880,9 +934,7 @@ video::cue { background: rgba(0, 0, 0, 0.4); }
 }
 #bootSplash.gone { opacity: 0; pointer-events: none; }
 #bootSplash .spinner { margin: 12px auto; }
-.boot-brand { font-size: 34px; font-weight: 800; letter-spacing: -0.5px; }
-.boot-brand span { color: var(--accent); }
-.boot-hint { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.boot-logo { width: 220px; height: 220px; border-radius: 44px; }
 
 /* ---- outline icons (inline SVG sprite) ---- */
 svg.icon {
@@ -1022,7 +1074,16 @@ svg.icon {
   padding-bottom: 6px;
   scroll-snap-type: x proximity;
   scrollbar-width: thin;
+  scrollbar-color: var(--accent-dim) transparent;
 }
+/* Chromium (Electron): theme the slider scrollbar to the blue-green accent */
+.slider::-webkit-scrollbar { height: 8px; }
+.slider::-webkit-scrollbar-track { background: transparent; }
+.slider::-webkit-scrollbar-thumb {
+  background: var(--accent-dim);
+  border-radius: 999px;
+}
+.slider::-webkit-scrollbar-thumb:hover { background: var(--accent); }
 .slider .card {
   flex: 0 0 auto;
   width: 132px;
@@ -1249,7 +1310,8 @@ button, select, .back-btn, .pill-btn {
     position: relative;
     z-index: 70;               /* stays above the scrim so search/bell/gear stay tappable */
   }
-  #brand { font-size: 17px; margin-right: auto; }
+  #brand { margin-right: auto; }
+  #brand img { height: 36px; }
   #searchForm { order: 5; flex: 1 1 100%; max-width: none; margin: 0; }
   #searchForm button { display: none; }        /* the soft keyboard's search key submits */
   #searchInput { font-size: 16px; padding: 10px 12px; }   /* 16px: no focus zoom */
@@ -1299,6 +1361,8 @@ button, select, .back-btn, .pill-btn {
   /* ---- sections / detail ---- */
   section { padding: 14px 16px 20px; }   /* #playerView keeps its own padding: 0 */
   /* detail head unwraps: poster + title row 1, controls row 2, info row 3 */
+  /* hero full-bleed tracks the section padding at this breakpoint */
+  #detailHero { margin: -14px -16px 10px; padding: 14px 16px 12px; }
   #detailGrid { display: flex; flex-wrap: wrap; gap: 12px; }
   #detailMeta { display: contents; }
   #detailTitle { flex: 1; min-width: 0; }
@@ -1359,6 +1423,7 @@ button, select, .back-btn, .pill-btn {
   .grid { grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 10px; }
   .grid.small { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
   .card .card-title { font-size: 12px; }
+  #detailHero { margin: -12px -12px 10px; padding: 12px 12px 12px; }
   #detailGrid { gap: 10px; }
   #detailPoster { width: 110px; }
   #detailTitle { font-size: 20px; }
@@ -1428,6 +1493,7 @@ button, select, .back-btn, .pill-btn {
   .page-btn { min-width: 28px; padding: 5px 7px; }
 
   /* detail page: smaller poster, wrapping controls, tighter title */
+  #detailHero { margin: -14px -12px 10px; padding: 14px 12px 12px; }
   #detailGrid { gap: 10px; }
   #detailPoster { width: 104px; }
   #detailTitle { font-size: 19px; }
