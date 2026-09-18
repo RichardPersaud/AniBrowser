@@ -934,7 +934,7 @@ video::cue { background: rgba(0, 0, 0, 0.4); }
 }
 #bootSplash.gone { opacity: 0; pointer-events: none; }
 #bootSplash .spinner { margin: 12px auto; }
-.boot-logo { width: 220px; height: 220px; border-radius: 44px; }
+.boot-logo { width: 220px; height: 220px; }
 
 /* ---- outline icons (inline SVG sprite) ---- */
 svg.icon {
@@ -1421,6 +1421,8 @@ button, select, .back-btn, .pill-btn {
   section { padding: 12px 12px 20px; }
   h2 { font-size: 15px; }
   .grid { grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 10px; }
+  /* browse-all: exactly 3 covers per row on phones */
+  #browseGrid { grid-template-columns: repeat(3, 1fr); }
   .grid.small { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
   .card .card-title { font-size: 12px; }
   #detailHero { margin: -12px -12px 10px; padding: 12px 12px 12px; }
@@ -1483,6 +1485,11 @@ button, select, .back-btn, .pill-btn {
 
   /* alpha bar scrolls sideways instead of stacking tall */
   #alphaBar { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 4px; }
+
+  /* hide the vertical page scrollbar (mobile only) — horizontal slider
+     scrollbars (alpha bar, episode list) are kept */
+  ::-webkit-scrollbar:vertical { display: none; }
+  html { scrollbar-width: none; }
 
   /* pagination: Prev | pages | Next on one row, "Page x of y" underneath */
   #browsePager { flex-wrap: wrap; gap: 8px; }
