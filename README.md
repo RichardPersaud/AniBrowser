@@ -1,4 +1,4 @@
-# AniBrowser
+# AniNinja
 
 Personal desktop app for browsing and streaming anime — a GUI equivalent of
 [ani-cli](https://github.com/pystardust/ani-cli) using the same source site
@@ -31,7 +31,7 @@ for updates every 6 hours and offers a one-tap install of new APKs.
 ### Windows
 
 1. Go to the [Releases page](https://github.com/RichardPersaud/AniBrowser/releases)
-2. Under the latest release, download **AniBrowser-Setup-x.y.z.exe** from Assets
+2. Under the latest release, download **AniNinja-Setup-x.y.z.exe** from Assets
    (direct link for v1.0.18:
    [AniBrowser-Setup-1.0.18.exe](https://github.com/RichardPersaud/AniBrowser/releases/download/v1.0.18/AniBrowser-Setup-1.0.18.exe))
 3. Run the installer — standard setup with a desktop shortcut
@@ -46,7 +46,7 @@ watch history survive updates and reinstalls.
 
 ### Auto-updates (from v1.0.15 on)
 
-Once installed, AniBrowser keeps itself up to date — you only ever run the
+Once installed, AniNinja keeps itself up to date — you only ever run the
 installer once:
 
 - The app checks GitHub Releases on launch and every 6 hours.
@@ -125,7 +125,7 @@ Keyboard: `Space` play/pause · `←/→` seek 10s · `F` fullscreen
 ```
 npm install
 npm start        # run in dev
-npm run dist     # produce dist/AniBrowser Setup x.y.z.exe
+npm run dist     # produce dist/AniNinja Setup x.y.z.exe
 npm run release  # build AND publish a draft GitHub release (needs GH_TOKEN)
 ```
 
@@ -175,8 +175,8 @@ $rel = Invoke-RestMethod -Headers @{Authorization="Bearer $env:GH_TOKEN"} `
   https://api.github.com/repos/RichardPersaud/AniBrowser/releases
 $rel = $rel | Where-Object { $_.tag_name -eq "v<version>" }
 Invoke-RestMethod -Method Post -Headers @{Authorization="Bearer $env:GH_TOKEN"} `
-  "$($rel.upload_url.Split('{')[0])?name=AniBrowser-Setup-x.y.z.exe" `
-  -ContentType application/octet-stream -InFile "dist/AniBrowser Setup x.y.z.exe"
+  "$($rel.upload_url.Split('{')[0])?name=AniNinja-Setup-x.y.z.exe" `
+  -ContentType application/octet-stream -InFile "dist/AniNinja Setup x.y.z.exe"
 # same for latest.yml (ContentType text/plain) if missing
 Invoke-RestMethod -Method Patch -Headers @{Authorization="Bearer $env:GH_TOKEN"} `
   -ContentType application/json -Body '{"draft":false}' $rel.url
@@ -214,7 +214,7 @@ npm start        # run it straight from source
 - `hls.js` is vendored at `ui/hls.min.js` (no CDN, works offline)
 
 To build an installer on the new machine: `npm run dist` →
-`dist/AniBrowser Setup x.y.z.exe`. Building needs internet access.
+`dist/AniNinja Setup x.y.z.exe`. Building needs internet access.
 
 Notes:
 

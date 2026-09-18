@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>AniBrowser</title>
+  <title>AniNinja</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -26,13 +26,12 @@
     <symbol id="i-filter" viewBox="0 0 24 24"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></symbol>
   </svg>
   <div id="bootSplash">
-    <div class="boot-brand">Ani<span>Browser</span></div>
+    <img class="boot-logo" src="logo.png" alt="">
     <div class="spinner"></div>
-    <p class="boot-hint">Loading your library…</p>
   </div>
   <header id="topbar">
     <button id="sidebarBtn" title="Toggle sidebar"><svg class="icon"><use href="#i-menu"></use></svg></button>
-    <div id="brand">Ani<span>Browser</span></div>
+    <div id="brand"><img src="logo-nav.png" alt="AniNinja"></div>
     <form id="searchForm" autocomplete="off">
       <div id="searchBox">
         <input id="searchInput" type="search" placeholder="Search anime…" spellcheck="false">
@@ -90,7 +89,7 @@
         <hr class="setting-sep">
         <p class="hint" id="backupHint"></p>
         <button id="exportBtn" class="pill-btn" style="margin: 8px 0 4px">Download my data</button>
-        <p class="hint">Saves your favorites, history and settings as a JSON file in your AniBrowser data folder.</p>
+        <p class="hint">Saves your favorites, history and settings as a JSON file in your AniNinja data folder.</p>
         <hr class="setting-sep">
         <label class="setting-row">Updates
           <div class="update-row">
@@ -99,7 +98,7 @@
           </div>
         </label>
         <hr class="setting-sep">
-        <p class="hint" id="appVersion">AniBrowser</p>
+        <p class="hint" id="appVersion">AniNinja</p>
       </div>
     </div>
   </header>
@@ -113,7 +112,7 @@
         <button class="side-item" data-nav="browse"><span class="side-ico"><svg class="icon"><use href="#i-grid"></use></svg></span> Browse</button>
         <button class="side-item" data-nav="favorites"><span class="side-ico"><svg class="icon"><use href="#i-heart"></use></svg></span> Favorites <span id="favCount" class="side-badge" hidden></span></button>
       </nav>
-      <div class="side-foot">AniBrowser <span id="sideVersion"></span></div>
+      <div class="side-foot">AniNinja <span id="sideVersion"></span></div>
     </aside>
 
     <main id="main">
@@ -213,6 +212,7 @@
 
       <!-- DETAIL -->
       <section id="detailView" hidden>
+        <div id="detailHero">
         <button class="back-btn" data-back="back">← Back</button>
         <div id="detailGrid">
           <img id="detailPoster" alt="">
@@ -239,6 +239,7 @@
             </div>
           </div>
         </div>
+        </div><!-- /detailHero -->
       <h2>Episodes</h2>
       <div id="epGrid" class="ep-grid"></div>
       <div id="epLoading"><div class="spinner"></div></div>
@@ -319,15 +320,15 @@
   <!-- first-launch gate: nothing is usable until these terms are accepted -->
   <div id="tosOverlay" hidden>
     <div id="tosPanel">
-      <h2>Welcome to AniBrowser</h2>
+      <h2>Welcome to AniNinja</h2>
       <div id="tosText">
-        <p><strong>1. Personal use.</strong> AniBrowser is provided for your personal, non-commercial use only. You may not sell, sublicense, or redistribute the app itself.</p>
-        <p><strong>2. Third-party content.</strong> AniBrowser does not host, store, upload, or create any media. All anime titles, artwork and video streams are retrieved live from publicly accessible third-party websites and remain the property of their respective rights holders. AniBrowser acts solely as a viewer for content that those third parties make publicly available.</p>
-        <p><strong>3. Your responsibility.</strong> You are solely responsible for using AniBrowser in a way that complies with the laws of your country and region, including copyright law. If accessing such content is not permitted where you live, you must not use AniBrowser.</p>
-        <p><strong>4. No warranty.</strong> AniBrowser is provided &ldquo;as is&rdquo; and &ldquo;as available&rdquo;, without warranties of any kind, express or implied. To the fullest extent permitted by law, the operator is not liable for any damages, data loss, or legal claims arising from your use of the app or from content you view through it.</p>
-        <p><strong>5. Your data.</strong> Your favorites, watch history and settings are stored only on your own device (plus a backup file in your device&rsquo;s AniBrowser folder). Nothing about you is collected, tracked, or shared.</p>
+        <p><strong>1. Personal use.</strong> AniNinja is provided for your personal, non-commercial use only. You may not sell, sublicense, or redistribute the app itself.</p>
+        <p><strong>2. Third-party content.</strong> AniNinja does not host, store, upload, or create any media. All anime titles, artwork and video streams are retrieved live from publicly accessible third-party websites and remain the property of their respective rights holders. AniNinja acts solely as a viewer for content that those third parties make publicly available.</p>
+        <p><strong>3. Your responsibility.</strong> You are solely responsible for using AniNinja in a way that complies with the laws of your country and region, including copyright law. If accessing such content is not permitted where you live, you must not use AniNinja.</p>
+        <p><strong>4. No warranty.</strong> AniNinja is provided &ldquo;as is&rdquo; and &ldquo;as available&rdquo;, without warranties of any kind, express or implied. To the fullest extent permitted by law, the operator is not liable for any damages, data loss, or legal claims arising from your use of the app or from content you view through it.</p>
+        <p><strong>5. Your data.</strong> Your favorites, watch history and settings are stored only on your own device (plus a backup file in your device&rsquo;s AniNinja folder). Nothing about you is collected, tracked, or shared.</p>
         <p><strong>6. Content removal.</strong> Rights holders can request removal of links to their content by contacting the developer; such links will be removed promptly.</p>
-        <p><strong>7. Acceptance.</strong> By tapping &ldquo;I agree&rdquo; you confirm that you have read, understood, and accepted these terms. If you do not agree, do not use AniBrowser.</p>
+        <p><strong>7. Acceptance.</strong> By tapping &ldquo;I agree&rdquo; you confirm that you have read, understood, and accepted these terms. If you do not agree, do not use AniNinja.</p>
       </div>
       <div id="tosActions">
         <button id="tosDecline" class="pill-btn">Decline</button>

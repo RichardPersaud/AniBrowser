@@ -764,10 +764,11 @@ function browseByGenre(slug) {
 const mqMobile = window.matchMedia('(max-width: 820px)');
 
 /* --- sidebar ---
-   Default open on desktop, closed on phones (overlay drawer). Persistence is
+   Default closed everywhere (it's an overlay drawer — open at launch it covers
+   the left edge of the content and reads as "UI cut off"). Persistence is
    desktop-only: a phone never writes sidebarOpen, so a desktop-set `true`
    can't force the drawer open on a narrow screen. */
-let sidebarOpen = mqMobile.matches ? false : prefs().sidebarOpen !== false;
+let sidebarOpen = mqMobile.matches ? false : prefs().sidebarOpen === true;
 function applySidebar(persist = true) {
   document.body.classList.toggle('sidebar-open', sidebarOpen);
   if (!mqMobile.matches && persist) {
@@ -783,7 +784,7 @@ $('sidebarBtn').addEventListener('click', () => {
 $('drawerClose').addEventListener('click', () => { sidebarOpen = false; applySidebar(false); });
 $('scrim').addEventListener('click', () => { sidebarOpen = false; applySidebar(false); });
 mqMobile.addEventListener?.('change', () => {
-  sidebarOpen = mqMobile.matches ? false : prefs().sidebarOpen !== false;
+  sidebarOpen = mqMobile.matches ? false : prefs().sidebarOpen === true;
   applySidebar(false);
 });
 
@@ -874,11 +875,10 @@ $('miniClose').addEventListener('click', () => stopPlayback());
 })();
 
 async function sidebarNav(target) {
-  // on phones the sidebar covers content — every nav tap closes it again
-  if (IS_MOBILE) {
-    sidebarOpen = false;
-    applySidebar();
-  }
+  // the drawer always closes on nav — the user picked a destination, the menu's
+  // job is done (on phones it would otherwise cover the content they navigated to)
+  sidebarOpen = false;
+  applySidebar();
   if (state.view === 'playerView') {
     // dock the video into the in-window mini player — playback survives the
     // reparent, so browsing around never interrupts an episode
@@ -908,9 +908,19 @@ document.querySelectorAll('.side-item').forEach((b) => {
     // buttons like the drawer's ✕ carry .side-item styling but no nav target —
     // they must not fall through to the favorites branch
     if (!b.dataset.nav) return;
-    if (mqMobile.matches) { sidebarOpen = false; applySidebar(false); } // close the drawer on navigate
-    sidebarNav(b.dataset.nav);
+    sidebarNav(b.dataset.nav); // sidebarNav closes the drawer
   });
+});
+
+/* clicking anywhere outside the open drawer closes it (phones get the same
+   result from the scrim; this covers desktop, where there is no scrim) */
+document.addEventListener('click', (e) => {
+  if (!sidebarOpen) return;
+  // the ☰ button and the drawer itself own their clicks — the ☰ must still
+  // be able to toggle the drawer open
+  if (e.target.closest('#sidebar') || e.target.closest('#sidebarBtn')) return;
+  sidebarOpen = false;
+  applySidebar();
 });
 
 $('searchForm').addEventListener('submit', (e) => {
@@ -1502,6 +1512,11 @@ async function openDetail(slug, title, poster, onReady) {
   $('detailTitle').textContent = title;
   $('detailTitle').title = title; // desktop hover shows a long clamped title in full
   $('detailPoster').src = poster || '';
+  // hero backdrop: same art, blurred behind the header (CSS reads --detail-bg)
+  $('detailHero').style.setProperty(
+    '--detail-bg',
+    poster ? `url("${poster.replace(/"/g, '%22')}")` : 'none'
+  );
   updateDetailFav();
   renderDetailInfo(null); // hide stale info while loading
   $('recSection').hidden = true; // ...and stale recommendations
@@ -1937,7 +1952,8 @@ function renderUpdateUI(u) {
     btn.hidden = false;
     if (u.state === 'available') {
       $('updateText').textContent = `AniBrowser v${u.version} is available.`;
-      btn.textContent = 'Download update';
+      // dev builds can't self-update — send the user to the releases page instead
+      btn.textContent = u.external ? 'Open releases page' : 'Download update';
       btn.disabled = false;
     } else if (u.state === 'downloading') {
       $('updateText').innerHTML =
@@ -1952,8 +1968,8 @@ function renderUpdateUI(u) {
   // settings row mirrors the state
   const st = $('updateStatusText');
   if (u.error) st.textContent = `Update check failed — will retry`;
-  else if (u.state === 'idle') st.textContent = u.disabled ? 'Auto-update disabled (dev)' : 'Up to date';
-  else if (u.state === 'available') st.textContent = `v${u.version} available`;
+  else if (u.state === 'idle') st.textContent = u.disabled ? 'Up to date (dev — no self-update)' : 'Up to date';
+  else if (u.state === 'available') st.textContent = u.external ? `v${u.version} available on GitHub` : `v${u.version} available`;
   else if (u.state === 'downloading') st.textContent = `Downloading… ${u.progress || 0}%`;
   else if (u.state === 'ready') st.textContent = IS_ANDROID
     ? `v${u.version} downloaded — tap to install`
@@ -1969,6 +1985,11 @@ async function pollUpdate() {
 }
 
 $('updateAction').addEventListener('click', async () => {
+  if (lastUpdate && lastUpdate.external) {
+    // dev build + newer release exists: self-update is impossible, open GitHub
+    window.open('https://github.com/RichardPersaud/AniBrowser/releases/latest', '_blank');
+    return;
+  }
   if (updateState === 'ready' && IS_ANDROID) {
     // hand the downloaded APK to the system installer via the Expo shell
     if (!lastUpdate || !lastUpdate.apkPath) return toast('Update file missing — re-download', true);
@@ -2056,6 +2077,11 @@ function hideSplash() {
   splashGone = true;
   const s = $('bootSplash');
   s.classList.add('gone');
+  // tell the RN shell its cover (logo + wheel) can drop now — the shell keeps
+  // it up until this message so the app doesn't appear to boot twice
+  try {
+    window.ReactNativeWebView?.postMessage(JSON.stringify({ type: 'bootDone' }));
+  } catch {}
   // remove the element entirely: `hidden` can't override #bootSplash's ID-level
   // display:flex, and on Android's WebView the leftover full-screen layer froze
   // mid-fade as a permanent dim veil that blocked repaints until a scroll

@@ -3,6 +3,7 @@ import {
   ActivityIndicator,
   AppState,
   BackHandler,
+  Image,
   StatusBar,
   StyleSheet,
   Text,
@@ -107,11 +108,15 @@ export default function App() {
   const [phase, setPhase] = useState<Phase>('boot');
   const [port, setPort] = useState<number | null>(null);
   const [errMsg, setErrMsg] = useState('');
+  // cover the WebView with the boot splash until the web UI says it's ready —
+  // otherwise the user sees the logo/wheel twice: shell splash, then the UI's
+  const [covered, setCovered] = useState(true);
   const webRef = useRef<WebView>(null);
   const canGoBack = useRef(false);
 
   const boot = useCallback(() => {
     setPhase('boot');
+    setCovered(true);
     bootNode()
       .then((p) => {
         setPort(p);
@@ -124,6 +129,14 @@ export default function App() {
   }, []);
 
   useEffect(() => { boot(); }, [boot]);
+
+  // failsafe: if the UI never reports ready (stuck network, TOS edge case),
+  // drop the cover anyway so the user is never trapped behind it
+  useEffect(() => {
+    if (phase !== 'ready') return;
+    const t = setTimeout(() => setCovered(false), 15000);
+    return () => clearTimeout(t);
+  }, [phase]);
 
   useEffect(() => {
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
@@ -170,6 +183,10 @@ export default function App() {
         <StatusBar barStyle="light-content" backgroundColor="#0b0e14" />
         {/* the app draws edge-to-edge; keep the web UI below the status bar */}
         <View style={{ height: StatusBar.currentHeight ?? 0, backgroundColor: '#0b0e14' }} />
+        {/* alignSelf:stretch is load-bearing — root centers children, and a bare
+            View wrapping the WebView has no intrinsic width, so it (and the
+            WebView) would collapse to width 0 = black screen */}
+        <View style={{ flex: 1, alignSelf: 'stretch' }}>
         <WebView
           ref={webRef}
           source={{ uri: `http://127.0.0.1:${port}/` }}
@@ -204,6 +221,8 @@ export default function App() {
                 // sidebar tap while a video is playing — dock it into
                 // picture-in-picture instead of leaving the player
                 AniBrowserNode.enterPip();
+              } else if (msg.type === 'bootDone') {
+                setCovered(false);
               } else if (msg.type === 'notify') {
                 // favorites update → system notification (POST_NOTIFICATIONS is
                 // requested by the module on the first call)
@@ -231,6 +250,13 @@ export default function App() {
             setPhase('error');
           }}
         />
+        {covered && (
+          <View style={styles.cover}>
+            <Image source={require('./assets/splash-icon.png')} style={styles.bootLogo} />
+            <ActivityIndicator color="#25b8a0" style={styles.spinner} />
+          </View>
+        )}
+        </View>
       </View>
     );
   }
@@ -240,11 +266,8 @@ export default function App() {
       <StatusBar barStyle="light-content" backgroundColor="#0b0e14" />
       {phase === 'boot' ? (
         <>
-          <Text style={styles.brand}>
-            Ani<Text style={styles.brandAccent}>Browser</Text>
-          </Text>
+          <Image source={require('./assets/splash-icon.png')} style={styles.bootLogo} />
           <ActivityIndicator color="#25b8a0" style={styles.spinner} />
-          <Text style={styles.hint}>starting the local server…</Text>
         </>
       ) : (
         <>
@@ -271,6 +294,14 @@ const styles = StyleSheet.create({
   web: { flex: 1, alignSelf: 'stretch', backgroundColor: '#0b0e14' },
   brand: { fontSize: 34, fontWeight: '800', color: '#e8eaf0', letterSpacing: -0.5 },
   brandAccent: { color: '#25b8a0' },
+  bootLogo: { width: 220, height: 220, borderRadius: 44, marginBottom: 4 },
+  cover: {
+    position: 'absolute',
+    top: 0, left: 0, right: 0, bottom: 0,
+    backgroundColor: '#0b0e14',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   spinner: { margin: 16 },
   hint: { fontSize: 12, color: '#5c6470' },
   errTitle: { fontSize: 18, fontWeight: '700', color: '#e8eaf0' },

@@ -1,8 +1,8 @@
 {
   "expo": {
-    "name": "AniBrowser",
+    "name": "AniNinja",
     "slug": "anibrowser",
-    "version": "1.0.18",
+    "version": "1.1.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
@@ -11,10 +11,10 @@
     },
     "android": {
       "package": "io.local.anibrowser",
-      "versionCode": 2,
+      "versionCode": 3,
       "usesCleartextTraffic": true,
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
+        "backgroundColor": "#000000",
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
