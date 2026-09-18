@@ -4,6 +4,7 @@ import {
   AppState,
   BackHandler,
   Image,
+  Linking,
   StatusBar,
   StyleSheet,
   Text,
@@ -234,6 +235,10 @@ function Shell() {
                 // favorites update → system notification (POST_NOTIFICATIONS is
                 // requested by the module on the first call)
                 AniBrowserNode.notify(String(msg.title ?? ''), String(msg.body ?? ''));
+              } else if (msg.type === 'openExternal') {
+                // cloud sign-in: the Google OAuth page (and its loopback
+                // callback) must run in the device's browser, not this WebView
+                Linking.openURL(String(msg.url ?? '')).catch(() => {});
               }
             } catch {
               // non-JSON bridge message — ignore

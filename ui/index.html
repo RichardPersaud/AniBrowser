@@ -22,6 +22,7 @@
     <symbol id="i-chev-left" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></symbol>
     <symbol id="i-chev-right" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
     <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></symbol>
+    <symbol id="i-user" viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></symbol>
     <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></symbol>
     <symbol id="i-filter" viewBox="0 0 24 24"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></symbol>
   </svg>
@@ -91,6 +92,16 @@
         <button id="exportBtn" class="pill-btn" style="margin: 8px 0 4px">Download my data</button>
         <p class="hint">Saves your favorites, history and settings as a JSON file in your AniNinja data folder.</p>
         <hr class="setting-sep">
+        <label class="setting-row">Cloud sync
+          <div class="update-row">
+            <span id="syncStatusText">Off</span>
+            <button id="signInBtn" class="pill-btn" hidden><svg class="icon"><use href="#i-user"></use></svg> Sign in</button>
+            <button id="syncNowBtn" class="pill-btn" hidden><svg class="icon"><use href="#i-refresh"></use></svg> Sync now</button>
+            <button id="signOutBtn" class="pill-btn" hidden>Sign out</button>
+          </div>
+        </label>
+        <p class="hint" id="syncHint">Sign in with Google to keep favorites, history and settings in sync across your devices. Everything keeps working offline without an account.</p>
+        <hr class="setting-sep">
         <label class="setting-row">Updates
           <div class="update-row">
             <span id="updateStatusText">Checking…</span>
@@ -111,6 +122,7 @@
         <button class="side-item" data-nav="home"><span class="side-ico"><svg class="icon"><use href="#i-home"></use></svg></span> Home</button>
         <button class="side-item" data-nav="browse"><span class="side-ico"><svg class="icon"><use href="#i-grid"></use></svg></span> Browse</button>
         <button class="side-item" data-nav="favorites"><span class="side-ico"><svg class="icon"><use href="#i-heart"></use></svg></span> Favorites <span id="favCount" class="side-badge" hidden></span></button>
+        <button class="side-item" data-nav="profile"><span class="side-ico"><svg class="icon"><use href="#i-user"></use></svg></span> Profile</button>
       </nav>
       <div class="side-foot">AniNinja <span id="sideVersion"></span></div>
     </aside>
@@ -207,6 +219,36 @@
           <div class="empty-icon"><svg><use href="#i-heart"></use></svg></div>
           <p>No favorites yet.</p>
           <p class="hint">Hit the ♥ on any poster to pin it here.</p>
+        </div>
+      </section>
+
+      <!-- PROFILE -->
+      <section id="profileView" hidden>
+        <h2>Profile</h2>
+        <div id="profileCard">
+          <div id="profileHead">
+            <img id="profileAvatar" alt="" hidden>
+            <span id="profileAvatarFallback" hidden></span>
+            <div id="profileIdent">
+              <div id="profileName"></div>
+              <div id="profileEmail" class="hint"></div>
+            </div>
+          </div>
+          <div id="profileStats">
+            <div class="pstat"><span id="statFavs">0</span><em>Favorites</em></div>
+            <div class="pstat"><span id="statWatched">0</span><em>Watching</em></div>
+            <div class="pstat"><span id="statSynced">—</span><em>Last synced</em></div>
+          </div>
+          <div id="profileSyncLine">
+            <span id="profileSyncState"></span>
+            <button id="profileSyncNow" class="pill-btn" hidden><svg class="icon"><use href="#i-refresh"></use></svg> Sync now</button>
+          </div>
+          <p class="hint" id="profileSyncDetail"></p>
+          <div id="profileActions">
+            <button id="profileSignIn" class="pill-btn" hidden><svg class="icon"><use href="#i-user"></use></svg> Sign in with Google</button>
+            <button id="profileSignOut" class="pill-btn" hidden>Sign out</button>
+          </div>
+          <p class="hint">Favorites, history and settings live on this device and mirror to your account whenever you're online — the app works fully offline either way.</p>
         </div>
       </section>
 

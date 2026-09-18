@@ -41,6 +41,24 @@ const state = {
 const PROGRESS_KEY = 'anibrowser_progress';
 const PREFS_KEY = 'anibrowser_prefs';
 const FAVS_KEY = 'anibrowser_favorites';
+const TOMBSTONES_KEY = 'anibrowser_tombstones';
+const PREFS_TS_KEY = 'anibrowser_prefs_ts';
+
+// tombstones: { favorites: {slug: ts}, progress: {slug: ts} } — deletes need
+// markers so cloud sync can't resurrect them on another device
+function getTombstones() {
+  try { return JSON.parse(localStorage.getItem(TOMBSTONES_KEY) || '{}'); }
+  catch { return {}; }
+}
+function addTombstone(coll, slug) {
+  const t = getTombstones();
+  (t[coll] = t[coll] || {})[slug] = Date.now();
+  localStorage.setItem(TOMBSTONES_KEY, JSON.stringify(t));
+  scheduleBackup();
+}
+function prefsTs() {
+  return parseInt(localStorage.getItem(PREFS_TS_KEY) || '0', 10) || 0;
+}
 
 function getJSON() {
   try { return JSON.parse(localStorage.getItem(PROGRESS_KEY) || '{}'); }
@@ -56,6 +74,7 @@ function prefs() {
 }
 function setPrefs(p) {
   localStorage.setItem(PREFS_KEY, JSON.stringify(p));
+  localStorage.setItem(PREFS_TS_KEY, String(Date.now())); // prefs sync as one blob — stamp edits
   scheduleBackup();
 }
 // 18+ shows carry an r18 flag from the source's card markup; the settings
@@ -88,8 +107,10 @@ function scheduleBackup() {
 function backupPayload() {
   return JSON.stringify({
     prefs: prefs(),
+    prefsTs: prefsTs(),
     favorites: getFavs(),
     progress: getJSON(),
+    tombstones: getTombstones(),
   });
 }
 
@@ -108,15 +129,40 @@ window.addEventListener('beforeunload', () => {
   navigator.sendBeacon('/api/backup', new Blob([backupPayload()], { type: 'application/json' }));
 });
 
+// per-key newer-ts-wins merge for the dict-shaped collections (ties: local)
+// — used for the file-vs-localStorage restore so a phone and a desktop
+// converge instead of one side blindly clobbering the other
+function mergeDictNewerWins(local, remote) {
+  const out = {};
+  for (const k of new Set([...Object.keys(local), ...Object.keys(remote)])) {
+    const eL = local[k];
+    const eR = remote[k];
+    if (eL && eR) out[k] = (eR.ts || 0) > (eL.ts || 0) ? eR : eL;
+    else if (eR) out[k] = eR;
+    else out[k] = eL;
+  }
+  return out;
+}
+
 async function restoreFromBackup() {
   try {
     const { data } = await api('/api/backup');
     if (data) {
       // settings: the file is the durable copy, so it fills in / overrides defaults
       setPrefsSilent({ ...prefs(), ...(data.prefs || {}) });
-      // favorites & history: union of both sides
-      setFavsSilent({ ...(data.favorites || {}), ...getFavs() });
-      setJSONSilent({ ...(data.progress || {}), ...getJSON() });
+      if ((data.prefsTs || 0) > prefsTs()) localStorage.setItem(PREFS_TS_KEY, String(data.prefsTs));
+      // favorites & history: union, newer entry wins per show (the server has
+      // already merged the cloud into the file — this is file vs localStorage)
+      const fb = (data.tombstones || {}).favorites || {};
+      const pb = (data.tombstones || {}).progress || {};
+      const mergedFavs = mergeDictNewerWins(data.favorites || {}, getFavs());
+      const mergedProg = mergeDictNewerWins(data.progress || {}, getJSON());
+      setFavsSilent(mergedFavs);
+      setJSONSilent(mergedProg);
+      localStorage.setItem(TOMBSTONES_KEY, JSON.stringify({
+        favorites: { ...fb, ...getTombstones().favorites },
+        progress: { ...pb, ...getTombstones().progress },
+      }));
       updateFavCount();
     }
   } catch { /* backup is best-effort */ }
@@ -136,6 +182,7 @@ function toggleFav(r) {
   const f = getFavs();
   if (f[r.slug]) {
     delete f[r.slug];
+    addTombstone('favorites', r.slug); // sync: keep it deleted on other devices
     forgetFavTracking(r.slug); // drop its notification state
     toast('Removed from favorites');
   } else {
@@ -346,11 +393,12 @@ function toast(msg, isErr = false) {
 }
 
 function showView(name) {
-  for (const v of ['homeView', 'browseView', 'favView', 'detailView', 'playerView', 'collectionView']) {
+  for (const v of ['homeView', 'browseView', 'favView', 'detailView', 'playerView', 'collectionView', 'profileView']) {
     $(v).hidden = v !== name;
   }
   const navKey = name === 'favView' ? 'favorites'
     : name === 'browseView' ? 'browse'
+    : name === 'profileView' ? 'profile'
     : name === 'homeView' ? 'home' : null;
   document.querySelectorAll('.side-item').forEach((b) =>
     b.classList.toggle('active', !!navKey && b.dataset.nav === navKey)
@@ -897,6 +945,10 @@ async function sidebarNav(target) {
   else if (target === 'browse') {
     showView('browseView');
     loadBrowse();
+  } else if (target === 'profile') {
+    renderProfile(); // fills from the last known status before the fetch lands
+    pollSync(); // fresh status the moment the page opens
+    showView('profileView');
   } else {
     renderFavorites();
     showView('favView');
@@ -1183,6 +1235,7 @@ function renderContinue() {
       e.stopPropagation(); // don't open the card's detail view
       const all = getJSON();
       delete all[it.slug];
+      addTombstone('progress', it.slug); // sync: keep it deleted on other devices
       setJSON(all); // also schedules a backup write
       toast(`Removed "${it.title}" from history`);
       renderContinue();
@@ -1194,6 +1247,7 @@ function renderContinue() {
 
 $('clearHistoryBtn').addEventListener('click', () => {
   if (!confirm('Remove every show from your watch history?')) return;
+  for (const slug of Object.keys(getJSON())) addTombstone('progress', slug);
   setJSON({});
   toast('Watch history cleared');
   renderContinue();
@@ -1856,7 +1910,9 @@ if (prefs().autoNext) {
 
 $('settingsBtn').addEventListener('click', (e) => {
   e.stopPropagation();
-  $('settingsPanel').hidden = !$('settingsPanel').hidden;
+  const opening = $('settingsPanel').hidden;
+  $('settingsPanel').hidden = !opening;
+  if (opening) pollSync(); // refresh the sync row the moment the panel shows
 });
 document.addEventListener('click', (e) => {
   if ($('settingsPanel').hidden) return;
@@ -1864,6 +1920,195 @@ document.addEventListener('click', (e) => {
     $('settingsPanel').hidden = true;
   }
 });
+
+/* ---------------- cloud sync (Google via Supabase) ---------------- */
+
+// The sign-in URL must open in the SYSTEM browser (the loopback callback can't
+// navigate the app's own WebView): on Android the Expo shell hands it to
+// Linking.openURL, on desktop window.open goes through the main-process
+// window-open handler which calls shell.openExternal.
+function openExternal(url) {
+  if (IS_ANDROID && window.ReactNativeWebView) {
+    window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'openExternal', url }));
+  } else {
+    window.open(url, '_blank');
+  }
+}
+
+let lastSyncRender = ''; // serialized status — re-render the row only on change
+let lastSyncStatus = null; // last /api/auth/status payload (profile page reads it)
+let lastDataRev = -1;
+let signInPollTimer = null;
+
+function fmtSyncWhen(ts) {
+  const s = Math.round((Date.now() - ts) / 1000);
+  if (s < 60) return 'just now';
+  if (s < 3600) return `${Math.round(s / 60)} min ago`;
+  if (s < 86400) return `${Math.round(s / 3600)} h ago`;
+  return `${Math.round(s / 86400)} d ago`;
+}
+
+function renderSyncUI(s) {
+  lastSyncStatus = s;
+  const state = JSON.stringify([s.configured, s.signedIn, s.email, s.lastSync, s.lastError, s.syncing, s.portAvailable]);
+  if (state === lastSyncRender) return;
+  lastSyncRender = state;
+  const statusText = $('syncStatusText');
+  const hint = $('syncHint');
+  if (!s.configured) {
+    statusText.textContent = 'Off';
+    hint.textContent = 'Cloud sync is not enabled in this build. Everything keeps working offline.';
+  } else if (s.signedIn) {
+    statusText.textContent = s.syncing ? 'Syncing…' : s.lastSync ? `On — synced ${fmtSyncWhen(s.lastSync)}` : 'On';
+    hint.textContent = s.lastError
+      ? `Signed in as ${s.email} — retrying (${s.lastError})`
+      : `Signed in as ${s.email}. Favorites, history and settings sync automatically; offline changes catch up when you're back online.`;
+  } else {
+    statusText.textContent = 'Off';
+    hint.textContent = s.lastError || 'Sign in with Google to keep favorites, history and settings in sync across your devices. Everything keeps working offline without an account.';
+  }
+  $('signInBtn').hidden = !s.configured || s.signedIn;
+  $('syncNowBtn').hidden = !(s.configured && s.signedIn);
+  $('signOutBtn').hidden = !(s.configured && s.signedIn);
+}
+
+async function pollSync() {
+  try {
+    const s = await api('/api/auth/status');
+    renderSyncUI(s);
+    // dataRev bumps when a sync merged cloud data into the local file —
+    // re-read the file so new favorites/history show up without a restart
+    if (typeof s.dataRev === 'number' && s.dataRev !== lastDataRev) {
+      const boot = lastDataRev === -1; // the startup restore already covers rev 0..n
+      lastDataRev = s.dataRev;
+      if (!boot) {
+        await restoreFromBackup();
+        renderFavorites();
+        renderContinue();
+        renderProfile(); // profile stats count local favorites/history
+      }
+    }
+    if (!$('profileView').hidden) renderProfile(s);
+  } catch { /* server hiccup; next poll retries */ }
+}
+
+/* shared sync actions — the settings row and the profile page both use these */
+
+async function startSignInFlow(btn) {
+  btn.disabled = true;
+  try {
+    const r = await api('/api/auth/start', {});
+    if (!r.ok) throw new Error(r.error || 'Sign-in could not start');
+    if (r.url) openExternal(r.url); // desktop auto-opens too; harmless to re-open
+    $('syncHint').textContent = 'Finish signing in in your browser…';
+    $('profileSyncDetail').textContent = 'Finish signing in in your browser…';
+    // the callback lands on the local server; poll until the session shows up
+    clearTimeout(signInPollTimer);
+    const deadline = Date.now() + 60000;
+    const tick = async () => {
+      signInPollTimer = null;
+      try {
+        const s = await api('/api/auth/status');
+        renderSyncUI(s);
+        if (!$('profileView').hidden) renderProfile(s);
+        if (s.signedIn) {
+          toast('Signed in — sync started');
+          return;
+        }
+      } catch { /* keep polling through hiccups */ }
+      if (Date.now() < deadline) signInPollTimer = setTimeout(tick, 2000);
+      else pollSync(); // hand back to the slow cadence
+    };
+    signInPollTimer = setTimeout(tick, 2000);
+  } catch (e) {
+    toast('Sign-in failed: ' + e.message, true);
+    pollSync();
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function syncNowFlow(btn) {
+  if (btn) btn.disabled = true;
+  try {
+    $('syncStatusText').textContent = 'Syncing…';
+    const s = await api('/api/sync', {});
+    renderSyncUI(s);
+    if (!$('profileView').hidden) renderProfile(s);
+  } catch (e) {
+    toast('Sync failed: ' + e.message, true);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function signOutFlow(btn) {
+  if (btn) btn.disabled = true;
+  try {
+    const s = await api('/api/auth/logout', {});
+    renderSyncUI(s);
+    renderProfile(s);
+    toast('Signed out — your data stays on this device');
+  } catch (e) {
+    toast('Sign-out failed: ' + e.message, true);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+$('signInBtn').addEventListener('click', (e) => startSignInFlow(e.currentTarget));
+$('syncNowBtn').addEventListener('click', (e) => syncNowFlow(e.currentTarget));
+$('signOutBtn').addEventListener('click', (e) => signOutFlow(e.currentTarget));
+$('profileSignIn').addEventListener('click', (e) => startSignInFlow(e.currentTarget));
+$('profileSyncNow').addEventListener('click', (e) => syncNowFlow(e.currentTarget));
+$('profileSignOut').addEventListener('click', (e) => signOutFlow(e.currentTarget));
+
+/* profile page */
+
+function renderProfile(s) {
+  s = s || lastSyncStatus;
+  const signedIn = !!(s && s.signedIn);
+  const avatar = $('profileAvatar');
+  const fallback = $('profileAvatarFallback');
+  if (signedIn && s.picture) {
+    avatar.src = s.picture;
+    avatar.hidden = false;
+    fallback.hidden = true;
+  } else if (signedIn) {
+    avatar.hidden = true;
+    avatar.removeAttribute('src');
+    fallback.hidden = false;
+    fallback.textContent = (s.name || s.email || '?').trim().charAt(0).toUpperCase();
+  } else {
+    avatar.hidden = true;
+    avatar.removeAttribute('src');
+    fallback.hidden = true;
+  }
+  $('profileName').textContent = signedIn ? (s.name || s.email) : 'Not signed in';
+  $('profileEmail').textContent = signedIn && s.name ? s.email : '';
+
+  $('statFavs').textContent = String(Object.keys(getFavs()).length);
+  $('statWatched').textContent = String(Object.keys(getJSON()).length);
+  $('statSynced').textContent = signedIn && s.lastSync ? fmtSyncWhen(s.lastSync) : '—';
+
+  const syncState = $('profileSyncState');
+  const detail = $('profileSyncDetail');
+  if (!s || !s.configured) {
+    syncState.textContent = 'Cloud sync is off';
+    detail.textContent = 'Sign in with Google to mirror your favorites, history and settings across your devices.';
+  } else if (signedIn) {
+    syncState.textContent = s.syncing ? 'Syncing…' : 'Syncing automatically';
+    detail.textContent = s.lastError
+      ? `Will retry — ${s.lastError}`
+      : 'Your data mirrors to your account whenever this device is online.';
+  } else {
+    syncState.textContent = 'Cloud sync is off';
+    detail.textContent = s.lastError ? `Last attempt failed — ${s.lastError}` : 'Sign in to keep everything in sync across your devices.';
+  }
+  $('profileSignIn').hidden = !s || !s.configured || signedIn;
+  $('profileSyncNow').hidden = !signedIn;
+  $('profileSignOut').hidden = !signedIn;
+}
 
 const defQualitySel = $('defQualitySel');
 defQualitySel.value = String(prefs().quality || 'auto');
@@ -1922,6 +2167,54 @@ document.addEventListener('keydown', (e) => {
   else if (e.code === 'ArrowLeft') video.currentTime -= 10;
   else if (e.code === 'KeyF') document.fullscreenElement ? document.exitFullscreen() : $('playerWrap').requestFullscreen();
 });
+
+/* ---- drag-to-scroll on card sliders (desktop mouse) ----
+   One delegated pointer handler so every .slider — including ones built later
+   (upcoming years, continue watching, related) — is draggable. Touch already
+   pans natively, so this only arms on mouse pointers. */
+(() => {
+  if (!matchMedia('(hover: hover) and (pointer: fine)').matches) return;
+  const DRAG_PX = 6; // movement before it counts as a drag, not a click
+  let drag = null;   // { el, startX, startLeft, moved, pid }
+
+  document.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    const slider = e.target.closest?.('.slider');
+    if (!slider || slider.scrollWidth <= slider.clientWidth) return;
+    drag = { el: slider, startX: e.clientX, startLeft: slider.scrollLeft, moved: false, pid: e.pointerId };
+  }, true);
+
+  document.addEventListener('pointermove', (e) => {
+    if (!drag || e.pointerId !== drag.pid) return;
+    const dx = e.clientX - drag.startX;
+    if (!drag.moved && Math.abs(dx) < DRAG_PX) return;
+    if (!drag.moved) {
+      drag.moved = true;
+      drag.el.classList.add('dragging');
+      // scroll-snap would yank the row back while we drive scrollLeft
+      drag.el.style.scrollSnapType = 'none';
+      document.body.classList.add('dragging-slider');
+    }
+    drag.el.scrollLeft = drag.startLeft - dx;
+  });
+
+  const end = (e) => {
+    if (!drag || (e && e.pointerId !== drag.pid)) return;
+    const d = drag;
+    drag = null;
+    d.el.classList.remove('dragging');
+    d.el.style.scrollSnapType = '';
+    document.body.classList.remove('dragging-slider');
+    // a drag must not land as a click on the card underneath
+    if (d.moved) {
+      const swallow = (ev) => { ev.stopPropagation(); ev.preventDefault(); };
+      d.el.addEventListener('click', swallow, { capture: true, once: true });
+      setTimeout(() => d.el.removeEventListener('click', swallow, { capture: true }), 120);
+    }
+  };
+  document.addEventListener('pointerup', end, true);
+  document.addEventListener('pointercancel', end, true);
+})();
 
 /* ---------------- version + in-app updates ---------------- */
 
@@ -2120,6 +2413,8 @@ function hideSplash() {
   setInterval(checkFavEpisodes, 10 * 60 * 1000);
   pollUpdate(); // in-app update banner; the main process checks for releases itself
   setInterval(pollUpdate, 30 * 1000);
+  pollSync(); // cloud sync status row (same slow cadence as the update poll)
+  setInterval(pollSync, 30 * 1000);
   // 1s polling while a download runs so the progress bar actually moves
   setInterval(() => { if (updateState === 'downloading') pollUpdate(); }, 1000);
 })();
