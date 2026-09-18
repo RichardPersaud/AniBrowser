@@ -11,7 +11,7 @@ STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
 
 mkdir -p "$STAGE/nodejs-project/ui"
-cp "$ROOT/server.js" "$ROOT/scraper.js" "$STAGE/nodejs-project/"
+cp "$ROOT/server.js" "$ROOT/cloud.js" "$ROOT/scraper.js" "$STAGE/nodejs-project/"
 cp "$ROOT/expo-app/node-stub/index.js" "$ROOT/expo-app/node-stub/updater.js" "$STAGE/nodejs-project/"
 cp "$ROOT"/ui/index.html "$ROOT"/ui/style.css "$ROOT"/ui/app.js "$ROOT"/ui/hls.min.js "$ROOT"/ui/empty.png "$ROOT"/ui/logo.png "$ROOT"/ui/logo-nav.png "$ROOT"/ui/logo-t.png "$STAGE/nodejs-project/ui/"
 

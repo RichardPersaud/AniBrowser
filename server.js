@@ -3,11 +3,12 @@
 // player can add the required Referer (browsers forbid setting that header).
 
 const http = require('http');
+const https = require('https');
 const fs = require('fs');
 const fsp = fs.promises;
 const os = require('os');
 const path = require('path');
-const { Readable, pipeline } = require('stream');
+const { pipeline } = require('stream');
 const scraper = require('./scraper');
 // lazy: updater.js imports electron, so a plain `node server` (tests/probes)
 // must not load it until an /api/update call actually needs it
@@ -15,6 +16,13 @@ let updater = null;
 function updaterMod() {
   if (!updater) updater = require('./updater');
   return updater;
+}
+// lazy for the same reason: plain-node tests/probes must not load the cloud
+// module (which reads the auth file and can touch the network)
+let cloud = null;
+function cloudMod() {
+  if (!cloud) cloud = require('./cloud');
+  return cloud;
 }
 const VERSION = require('./package.json').version;
 
@@ -150,6 +158,8 @@ function queueBackupWrite(data) {
       await backupReady; // dir resolution (bounded by its own timeout)
       await writeBackup(data);
       console.log(`[backup] saved ${backupPath()}`);
+      // cloud sync mirrors the file — fire-and-forget, debounced inside cloud.js
+      try { cloudMod().onLocalDataChanged(); } catch { /* never block the write */ }
     })
     .catch((e) => console.error('[backup] write failed:', e.message));
 }
@@ -203,34 +213,30 @@ async function handleStream(req, res, q) {
   if (referer) headers.Referer = referer;
   if (req.headers.range) headers.Range = req.headers.range;
 
-  // abort the upstream fetch when the client goes away early (hls.js does this a lot)
+  // abort the upstream request when the client goes away early (hls.js does this a lot)
   const ctrl = new AbortController();
   res.on('close', () => {
     if (res.writableEnded) return; // normal completion — nothing to cancel
     try {
       ctrl.abort();
     } catch {
-      // abort() can throw while undici tears down the body stream; never let it crash us
+      // abort() can throw while the request is being torn down; never crash
     }
   });
 
   let up;
   try {
-    up = await fetch(target, {
-      headers,
-      redirect: 'follow',
-      signal: ctrl.signal,
-    });
+    up = await openSegment(target, headers, ctrl);
   } catch (e) {
     if (e && (e.name === 'AbortError' || e.code === 'ABORT_ERR')) return; // client vanished mid-request
     throw e;
   }
-  const ctype = (up.headers.get('content-type') || '').toLowerCase();
+  const ctype = (up.headers['content-type'] || '').toLowerCase();
   const pathNoQuery = target.split('?')[0];
   const isPlaylist = ctype.includes('mpegurl') || pathNoQuery.endsWith('.m3u8');
 
   if (isPlaylist) {
-    const text = await up.text();
+    const text = await readBody(up.res);
     const base = (up.url && up.url !== target ? up.url : target).split('?')[0];
     const out = rewritePlaylist(text, base, referer);
     res.writeHead(200, {
@@ -243,18 +249,69 @@ async function handleStream(req, res, q) {
 
   const h = {};
   for (const k of ['content-type', 'content-length', 'content-range', 'accept-ranges', 'last-modified', 'etag']) {
-    const v = up.headers.get(k);
+    const v = up.headers[k];
     if (v) h[k] = v;
   }
   h['Access-Control-Allow-Origin'] = '*';
   res.writeHead(up.status, h);
-  if (up.body) {
+  if (up.res) {
     // pipeline cleans up both sides on error/destroy; errors here are routine
     // (client seek/abort mid-segment) and must never surface as uncaught exceptions
-    pipeline(Readable.fromWeb(up.body), res, () => {});
+    pipeline(up.res, res, () => {});
   } else {
     res.end();
   }
+}
+
+// Stream CDNs start hanging a keep-alive connection after ~15 segments have
+// gone over it (measured 20-40s stalls — the exact "buffers a lot" symptom),
+// while a fresh socket per segment has never stalled. So HLS traffic goes out
+// over plain http/https with keep-alive off instead of undici's pooled fetch.
+const freshAgents = {
+  'http:': new http.Agent({ keepAlive: false }),
+  'https:': new https.Agent({ keepAlive: false }),
+};
+
+function openSegment(target, headers, ctrl, depth = 0) {
+  return new Promise((resolve, reject) => {
+    if (depth > 4) return reject(new Error('too many redirects'));
+    let u;
+    try {
+      u = new URL(target);
+    } catch {
+      return reject(new Error('Bad target'));
+    }
+    const agent = freshAgents[u.protocol];
+    if (!agent) return reject(new Error('Bad protocol: ' + u.protocol));
+    const mod = u.protocol === 'https:' ? https : http;
+    const req = mod.request(u, { agent, method: 'GET', headers });
+    req.setTimeout(30000, () => req.destroy(new Error('upstream timeout')));
+    ctrl.signal.addEventListener('abort', () => {
+      const err = new Error('client went away');
+      err.name = 'AbortError';
+      req.destroy(err);
+    }, { once: true });
+    req.on('response', (r) => {
+      const loc = r.headers.location;
+      if (loc && [301, 302, 303, 307, 308].includes(r.statusCode)) {
+        r.resume(); // discard the redirect body
+        resolve(openSegment(new URL(loc, u).href, headers, ctrl, depth + 1));
+        return;
+      }
+      resolve({ status: r.statusCode || 502, headers: r.headers, res: r, url: u.href });
+    });
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+function readBody(stream) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    stream.on('data', (c) => chunks.push(c));
+    stream.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    stream.on('error', reject);
+  });
 }
 
 async function route(req, res) {
@@ -442,6 +499,30 @@ async function route(req, res) {
     return handleStream(req, res, q);
   }
 
+  // ---- cloud sync (Google via Supabase) ----
+  if (p === '/auth/callback') {
+    console.log('[cloud] callback query:', q.toString() || '(empty)');
+    const page = await cloudMod().handleCallback(q);
+    // the system browser loads this page — plain HTML, no app CSP
+    res.writeHead(page.status, { 'Content-Type': 'text/html; charset=utf-8' });
+    return res.end(page.html);
+  }
+  if (p === '/api/auth/start') {
+    const r = await cloudMod().startSignIn();
+    return sendJson(res, r.ok ? 200 : (r.error && r.error.startsWith('Sign-in port') ? 409 : 400), r);
+  }
+  if (p === '/api/auth/status') {
+    return sendJson(res, 200, cloudMod().status());
+  }
+  if (p === '/api/auth/logout') {
+    await cloudMod().signOut();
+    return sendJson(res, 200, { ok: true, ...cloudMod().status() });
+  }
+  if (p === '/api/sync') {
+    cloudMod().syncNow();
+    return sendJson(res, 200, cloudMod().status());
+  }
+
   return serveStatic(req, res, p);
 }
 
@@ -458,11 +539,31 @@ function start(opts = {}) {
       }
     });
   });
-  return new Promise((resolve) => {
-    server.listen(0, '127.0.0.1', () =>
-      resolve({ server, port: server.address().port })
-    );
+  // the cloud sign-in redirect lands on a FIXED port (registered in the
+  // Supabase dashboard); if it's taken, fall back to random — sign-in then
+  // reports itself unavailable for this session, everything else works
+  const port = new Promise((resolve) => {
+    const fallback = () => {
+      server.removeAllListeners('error');
+      server.once('error', () => {}); // a random port can also lose the race — never crash
+      server.listen(0, '127.0.0.1', () => resolve(server.address().port));
+    };
+    server.once('error', fallback);
+    server.listen(cloudMod().AUTH_PORT, '127.0.0.1', () => resolve(server.address().port));
+  });
+  return port.then((p) => {
+    const portIsFixed = p === cloudMod().AUTH_PORT;
+    try {
+      cloudMod().init({
+        dataDir,
+        portIsFixed,
+        hooks: { readBackup, queueBackupWrite },
+      });
+    } catch (e) {
+      console.warn('[cloud] init failed:', e.message);
+    }
+    return { server, port: p, preferredPortOk: portIsFixed };
   });
 }
 
-module.exports = { start };
+module.exports = { start, readBackup };

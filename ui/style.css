@@ -302,6 +302,69 @@ body {
 .update-row span { font-size: 12px; color: var(--muted); }
 #favEmpty p { margin: 8px 0; }
 
+/* ---- profile page ---- */
+#profileCard {
+  max-width: 520px;
+  margin: 8px auto 0;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+#profileHead { display: flex; align-items: center; gap: 16px; }
+#profileAvatar, #profileAvatarFallback {
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  border: 2px solid var(--accent-dim);
+  flex: none;
+}
+#profileAvatar { object-fit: cover; background: var(--bg3); }
+#profileAvatarFallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 30px;
+  font-weight: 700;
+  color: var(--accent);
+  background: var(--bg3);
+}
+#profileIdent { min-width: 0; }
+#profileName { font-size: 18px; font-weight: 700; overflow-wrap: anywhere; }
+#profileEmail { overflow-wrap: anywhere; }
+#profileStats { display: flex; gap: 12px; }
+.pstat {
+  flex: 1;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 8px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.pstat span { font-size: 20px; font-weight: 700; color: var(--accent); }
+.pstat em { font-style: normal; font-size: 11px; color: var(--muted); }
+#profileSyncLine {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 13px;
+}
+#profileActions { display: flex; gap: 10px; flex-wrap: wrap; }
+@media (max-width: 540px) {
+  #profileCard { padding: 16px; gap: 14px; }
+  #profileAvatar, #profileAvatarFallback { width: 56px; height: 56px; }
+  #profileAvatarFallback { font-size: 24px; }
+  #profileName { font-size: 16px; }
+  .pstat span { font-size: 16px; }
+}
+
 /* ---- layout: sidebar + main ----
    The sidebar is an overlay: it slides over the main content instead of
    squeezing it, so opening/closing never reflows the grid underneath. */
@@ -335,6 +398,7 @@ body:not(.sidebar-open) #sidebar {
 
 .side-group { display: flex; flex-direction: column; gap: 4px; }
 .side-item {
+  position: relative;   /* anchors the absolutely-placed .side-badge */
   display: flex;
   align-items: center;
   gap: 10px;
@@ -449,6 +513,22 @@ h2 { font-size: 16px; margin: 18px 0 12px; color: var(--muted); font-weight: 600
   transform: translateY(-3px);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
   border-color: var(--accent-dim);
+}
+/* desktop hover polish: zoom the cover art inside the card and glow it with an
+   accent drop shadow. Gated on hover-capable pointers — a touch screen would
+   otherwise stick the effect on after a tap. */
+@media (hover: hover) and (pointer: fine) {
+  .card img {
+    transition: transform 0.25s ease;
+  }
+  .card:hover img {
+    transform: scale(1.07);
+  }
+  .card:hover {
+    box-shadow:
+      0 8px 24px rgba(0, 0, 0, 0.45),
+      0 0 22px rgba(53, 213, 191, 0.35);
+  }
 }
 .card img {
   width: 100%;
@@ -631,6 +711,16 @@ h2 { font-size: 16px; margin: 18px 0 12px; color: var(--muted); font-weight: 600
   background-position: center 25%;
   filter: blur(22px) brightness(0.45) saturate(1.15);
   z-index: 0;
+  /* slow vertical drift of the blurred backdrop (the -30px inset gives 30px
+     of slack; ±18px keeps the fade-out at the edges off-screen) */
+  animation: heroDrift 14s ease-in-out infinite alternate;
+}
+@keyframes heroDrift {
+  from { transform: translateY(-18px); }
+  to   { transform: translateY(18px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  #detailHero::before { animation: none; }
 }
 /* soften the banner's bottom edge into the page background */
 #detailHero::after {
@@ -1076,6 +1166,13 @@ svg.icon {
   scrollbar-width: thin;
   scrollbar-color: var(--accent-dim) transparent;
 }
+/* mouse drag-to-scroll: app.js arms this only for fine pointers (desktop) */
+@media (hover: hover) and (pointer: fine) {
+  .slider { cursor: grab; }
+  .slider:active { cursor: grabbing; }
+  .slider img { -webkit-user-drag: none; }
+}
+body.dragging-slider { user-select: none; -webkit-user-select: none; }
 /* Chromium (Electron): theme the slider scrollbar to the blue-green accent */
 .slider::-webkit-scrollbar { height: 8px; }
 .slider::-webkit-scrollbar-track { background: transparent; }
@@ -1345,13 +1442,33 @@ button, select, .back-btn, .pill-btn {
   body:not(.sidebar-open) #sidebar {   /* restate the closed rule so this block wins */
     position: fixed;
     top: 0; bottom: 0; left: 0;
-    width: min(78vw, 280px);
-    padding: 14px 10px;
+    /* 40% narrower than the old min(78vw, 280px) drawer */
+    width: min(47vw, 168px);
+    padding: 14px 6px;
     border-right: 1px solid var(--border);
     overflow-y: auto;
     z-index: 80;
     transform: translateX(-102%);
     transition: transform 0.22s ease;
+  }
+  /* drawer items go vertical: big icon on top, label underneath */
+  .side-item {
+    flex-direction: column;
+    gap: 5px;
+    align-items: center;
+    text-align: center;
+    font-size: 12px;
+    padding: 11px 4px;
+    white-space: normal;
+  }
+  .side-ico { width: auto; }
+  .side-ico .icon { width: 26px; height: 26px; }
+  .side-badge {
+    position: absolute;
+    top: 6px;
+    right: 8px;
+    margin-left: 0;
+    padding: 0 6px;
   }
   body.sidebar-open #sidebar {
     transform: translateX(0);
@@ -1391,7 +1508,7 @@ button, select, .back-btn, .pill-btn {
   .alpha-btn, .page-btn { min-width: 38px; padding: 9px 10px; font-size: 13px; }
   .chip { padding: 5px 10px; font-size: 11px; }
   .ep-btn { padding: 8px 4px; font-size: 12px; }
-  .side-item { padding: 14px 12px; font-size: 15px; }   /* navigation — stays full-size */
+  .side-item { padding: 12px 4px; font-size: 12px; }   /* vertical icon-over-label tiles (820px block) */
   .pill-btn, #moreBtn { padding: 6px 12px; font-size: 12px; }
   .sug-item { padding: 10px 12px; font-size: 14px; }
   .notif-item { padding: 11px 12px; }
