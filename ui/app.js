@@ -1928,7 +1928,7 @@ document.addEventListener('keydown', (e) => {
 async function loadVersion() {
   try {
     const { version, backupDir } = await api('/api/version');
-    $('appVersion').textContent = `AniBrowser v${version}`;
+    $('appVersion').textContent = `AniNinja v${version}`;
     $('sideVersion').textContent = `v${version}`;
     if (backupDir) {
       $('backupHint').textContent =
@@ -1951,7 +1951,7 @@ function renderUpdateUI(u) {
     const btn = $('updateAction');
     btn.hidden = false;
     if (u.state === 'available') {
-      $('updateText').textContent = `AniBrowser v${u.version} is available.`;
+      $('updateText').textContent = `AniNinja v${u.version} is available.`;
       // dev builds can't self-update — send the user to the releases page instead
       btn.textContent = u.external ? 'Open releases page' : 'Download update';
       btn.disabled = false;
@@ -1960,7 +1960,7 @@ function renderUpdateUI(u) {
         `Downloading v${u.version || ''}… <div class="u-progress"><div style="width:${u.progress || 0}%"></div></div>`;
       btn.hidden = true;
     } else if (u.state === 'ready') {
-      $('updateText').textContent = `AniBrowser v${u.version} is ready to install.`;
+      $('updateText').textContent = `AniNinja v${u.version} is ready to install.`;
       btn.textContent = IS_ANDROID ? 'Install update' : 'Restart to install';
       btn.disabled = false;
     }
@@ -2027,12 +2027,12 @@ $('tosAccept').addEventListener('click', () => {
   p.tosAccepted = true;
   setPrefs(p);
   $('tosOverlay').hidden = true;
-  toast('Welcome to AniBrowser');
+  toast('Welcome to AniNinja');
 });
 $('tosDecline').addEventListener('click', () => {
   if (tosDeclined) return;
   tosDeclined = true;
-  const m = el('p', 'hint', 'AniBrowser can only be used after accepting these terms. Close the app, or come back and tap “I agree” when you are ready.');
+  const m = el('p', 'hint', 'AniNinja can only be used after accepting these terms. Close the app, or come back and tap “I agree” when you are ready.');
   m.style.marginTop = '10px';
   m.style.textAlign = 'center';
   $('tosPanel').appendChild(m);
