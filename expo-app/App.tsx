@@ -201,6 +201,11 @@ export default function App() {
           mediaPlaybackRequiresUserAction={false}
           allowsFullscreenVideo
           setSupportMultipleWindows={false}
+          // the default whitelist is http/https only — without the install
+          // scheme here, react-native-webview never routes those navigations
+          // to onShouldStartLoadWithRequest (it Linking.openURLs them instead,
+          // which fails: nothing registers the scheme)
+          originWhitelist={['http://*', 'https://*', 'anibrowser-install://*']}
           mixedContentMode="never"
           cacheEnabled={false}
           // without this Chromium lays out at a stale "device width" (485css on a
@@ -234,12 +239,18 @@ export default function App() {
           }}
           onShouldStartLoadWithRequest={(req) => {
             if (req.url.startsWith(INSTALL_SCHEME)) {
-              const path = decodeURIComponent(
-                req.url.slice((INSTALL_SCHEME + 'apk?path=').length)
-              );
-              AniBrowserNode.installApk(path).catch((e) =>
-                console.log('[shell] install failed', e)
-              );
+              // the WebView may normalize the URL (empty authority -> extra
+              // slash, re-encoded query), so slice a fixed prefix off — pull
+              // the path param out instead
+              const m = /[?&]path=([^&]+)/.exec(req.url);
+              const apkPath = m ? decodeURIComponent(m[1]) : '';
+              AniBrowserNode.installApk(apkPath).catch((e) => {
+                console.log('[shell] install failed', e);
+                // surface it in the UI — console.log is invisible to the user
+                webRef.current?.postMessage(
+                  JSON.stringify({ type: 'installError', error: String(e?.message ?? e) })
+                );
+              });
               return false;
             }
             return true;

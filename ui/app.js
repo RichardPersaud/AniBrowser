@@ -1997,8 +1997,10 @@ $('updateAction').addEventListener('click', async () => {
     return;
   }
   const action = updateState === 'ready' ? 'install' : 'download';
+  if (action === 'download' && updateState === 'downloading') return; // already running
   try {
     await api('/api/update', { action });
+    pollUpdate(); // don't wait for the 30s poll — show the progress bar now
   } catch (e) {
     toast('Update failed: ' + e.message, true);
   }
@@ -2020,6 +2022,17 @@ $('checkUpdateBtn').addEventListener('click', async () => {
 /* ---- first-launch terms & conditions ----
    Nothing in the app is usable until these are accepted once; acceptance is
    persisted in prefs (and mirrored to the backup file), so it never asks again. */
+
+// messages FROM the Expo shell (install failures etc.) — react-native-webview
+// delivers them as window 'message' events with a JSON string payload
+window.addEventListener('message', (ev) => {
+  try {
+    const msg = typeof ev.data === 'string' ? JSON.parse(ev.data) : ev.data;
+    if (msg && msg.type === 'installError') {
+      toast('Install failed: ' + (msg.error || 'unknown error'), true);
+    }
+  } catch { /* non-JSON — ignore */ }
+});
 
 let tosDeclined = false;
 $('tosAccept').addEventListener('click', () => {
@@ -2107,4 +2120,6 @@ function hideSplash() {
   setInterval(checkFavEpisodes, 10 * 60 * 1000);
   pollUpdate(); // in-app update banner; the main process checks for releases itself
   setInterval(pollUpdate, 30 * 1000);
+  // 1s polling while a download runs so the progress bar actually moves
+  setInterval(() => { if (updateState === 'downloading') pollUpdate(); }, 1000);
 })();
