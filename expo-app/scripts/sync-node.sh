@@ -27,4 +27,9 @@ if [ "$TAR" = zip ]; then
 else
   "$TAR" -cf "$DEST" --format zip -C "$STAGE" nodejs-project
 fi
+# release APKs read the zip as a raw android asset (the Kotlin side copies it
+# out itself — expo-asset's cache never revalidates across app updates)
+mkdir -p "$HERE/../android/app/src/main/assets"
+cp "$DEST" "$HERE/../android/app/src/main/assets/nodejs-project.zip"
+
 echo "synced v$VER ($(du -sh "$DEST" | cut -f1)) -> expo-app/assets/nodejs-project.zip"
