@@ -14,6 +14,7 @@ import { WebView } from 'react-native-webview';
 import { Asset } from 'expo-asset';
 import * as ScreenOrientation from 'expo-screen-orientation';
 import { File, Paths } from 'expo-file-system';
+import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import AniBrowserNode from './modules/anibrowser-node';
 
 // single zip asset containing the whole node runtime (server + scraper + ui)
@@ -104,7 +105,7 @@ async function bootNode(): Promise<number> {
   return AniBrowserNode.startNode(zipPath, dataDir);
 }
 
-export default function App() {
+function Shell() {
   const [phase, setPhase] = useState<Phase>('boot');
   const [port, setPort] = useState<number | null>(null);
   const [errMsg, setErrMsg] = useState('');
@@ -177,12 +178,16 @@ export default function App() {
     return () => sub.remove();
   }, []);
 
+  // edge-to-edge is enforced on Android 15+: StatusBar.currentHeight reads 0,
+  // so take the real inset from safe-area-context
+  const insets = useSafeAreaInsets();
+
   if (phase === 'ready' && port != null) {
     return (
       <View style={styles.root}>
         <StatusBar barStyle="light-content" backgroundColor="#0b0e14" />
         {/* the app draws edge-to-edge; keep the web UI below the status bar */}
-        <View style={{ height: StatusBar.currentHeight ?? 0, backgroundColor: '#0b0e14' }} />
+        <View style={{ height: insets.top, backgroundColor: '#0b0e14' }} />
         {/* alignSelf:stretch is load-bearing — root centers children, and a bare
             View wrapping the WebView has no intrinsic width, so it (and the
             WebView) would collapse to width 0 = black screen */}
@@ -273,7 +278,7 @@ export default function App() {
   }
 
   return (
-    <View style={styles.root}>
+    <View style={[styles.root, { paddingTop: insets.top }]}>
       <StatusBar barStyle="light-content" backgroundColor="#0b0e14" />
       {phase === 'boot' ? (
         <>
@@ -293,6 +298,14 @@ export default function App() {
   );
 }
 
+export default function App() {
+  return (
+    <SafeAreaProvider>
+      <Shell />
+    </SafeAreaProvider>
+  );
+}
+
 const styles = StyleSheet.create({
   root: {
     flex: 1,
@@ -305,7 +318,7 @@ const styles = StyleSheet.create({
   web: { flex: 1, alignSelf: 'stretch', backgroundColor: '#0b0e14' },
   brand: { fontSize: 34, fontWeight: '800', color: '#e8eaf0', letterSpacing: -0.5 },
   brandAccent: { color: '#25b8a0' },
-  bootLogo: { width: 220, height: 220, borderRadius: 44, marginBottom: 4 },
+  bootLogo: { width: 220, height: 220, marginBottom: 4 },
   cover: {
     position: 'absolute',
     top: 0, left: 0, right: 0, bottom: 0,
