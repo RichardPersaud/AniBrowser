@@ -37,6 +37,7 @@ let dataDir = null;
 let portIsFixed = false;
 let session = null;      // { access_token, refresh_token, expires_at, user }
 let pending = null;      // { state, code_verifier, redirect_to, createdAt }
+let exchanging = false;  // a code exchange is running in the background
 let pushTimer = null;
 let retryTimer = null;
 let syncing = false;
@@ -50,6 +51,10 @@ let hooks = null;        // { readBackup, queueBackupWrite } — set by init(), 
 // ---- small helpers ---------------------------------------------------------
 
 const authFile = () => (dataDir ? path.join(dataDir, AUTH_FILE) : null);
+const AVATAR_FILE = 'anibrowser-avatar'; // raw image bytes cached next to the auth file
+const avatarFile = () => (dataDir ? path.join(dataDir, AVATAR_FILE) : null);
+let avatar = null;       // { url, type } — provenance of the cached profile photo
+let avatarDl = false;    // an avatar download is in flight
 
 async function saveAuthState(extra) {
   const file = authFile();
@@ -59,6 +64,7 @@ async function saveAuthState(extra) {
     refresh_token: session?.refresh_token || null,
     expires_at: session?.expires_at || 0,
     user: session?.user || null,
+    avatar: avatar || null,
     ...extra,
   };
   // write-then-rename so a crash mid-write can't leave a truncated file
@@ -78,6 +84,7 @@ async function loadAuthState() {
         user: raw.user || null,
       };
     }
+    avatar = (raw && raw.avatar) || null;
     if (raw && raw.pending && Date.now() - raw.pending.createdAt < PENDING_TTL) {
       pending = raw.pending;
     }
@@ -121,6 +128,69 @@ function reqJson(method, url, { headers = {}, body } = {}, timeoutMs = 30000, at
   });
 }
 
+// Same contract as reqJson but for binary bodies (the profile photo). Follows
+// redirects (Google's avatar URLs redirect); caps size; retries like reqJson.
+function reqRaw(url, timeoutMs = 15000, attempt = 0) {
+  return new Promise((resolve, reject) => {
+    const req = https.request(url, { method: 'GET', agent: noKeepAlive }, (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location && attempt < 3) {
+        res.resume();
+        return reqRaw(new URL(res.headers.location, url).toString(), timeoutMs, attempt + 1).then(resolve, reject);
+      }
+      const chunks = [];
+      let size = 0;
+      res.on('data', (c) => {
+        size += c.length;
+        if (size > 5 * 1024 * 1024) req.destroy(new Error('response too large'));
+        else chunks.push(c);
+      });
+      res.on('end', () => resolve({
+        status: res.statusCode,
+        buf: Buffer.concat(chunks),
+        contentType: res.headers['content-type'] || '',
+      }));
+    });
+    req.setTimeout(timeoutMs, () => req.destroy(new Error('timed out')));
+    req.on('error', (e) => {
+      if (attempt < 2) {
+        setTimeout(() => reqRaw(url, timeoutMs, attempt + 1).then(resolve, reject), attempt * 2000);
+      } else reject(e);
+    });
+    req.end();
+  });
+}
+
+// ---- avatar cache -----------------------------------------------------------
+// The profile photo is hotlinked from Google by default, which blanks out the
+// moment the device goes offline. Download it once (per URL) into the app's
+// data folder; the UI then loads it from the loopback server, which works with
+// no network at all. A failed download keeps the previous image on disk.
+
+async function saveAvatarIfChanged() {
+  const url = session?.user?.picture;
+  if (!url || !dataDir) return;
+  if (avatar && avatar.url === url) return; // already cached this exact image
+  if (avatarDl) return;
+  avatarDl = true;
+  try {
+    const r = await reqRaw(url);
+    if (r.status !== 200 || !r.buf.length) return;
+    const type = /^image\/[a-z0-9.+-]+/i.exec(r.contentType)?.[0] || 'image/png';
+    await fsp.writeFile(avatarFile(), r.buf);
+    avatar = { url, type };
+    await saveAuthState().catch(() => {});
+  } catch (e) {
+    console.warn('[cloud] avatar download failed (keeping previous):', e.message);
+  } finally {
+    avatarDl = false;
+  }
+}
+
+function avatarInfo() {
+  if (!avatar || !dataDir) return null;
+  return { path: avatarFile(), type: avatar.type };
+}
+
 // ---- auth ------------------------------------------------------------------
 
 function newPending() {
@@ -145,15 +215,10 @@ async function startSignIn() {
   const url = `${apiBase()}/auth/v1/authorize?provider=google` +
     `&redirect_to=${encodeURIComponent(pending.redirect_to)}` +
     `&code_challenge=${pending.code_challenge}&code_challenge_method=s256&state=${pending.state}`;
-  let opened = false;
-  try {
-    const electron = require('electron');
-    if (electron && electron.shell && electron.shell.openExternal) {
-      electron.shell.openExternal(url);
-      opened = true;
-    }
-  } catch { /* not running under Electron (probe scripts / Android) */ }
-  return { ok: true, url, opened };
+  // The caller (ui/app.js) opens the URL itself — the desktop shell routes it
+  // into the in-app browser window, Android into Custom Tabs. Opening it here
+  // as well would launch a second (system) browser.
+  return { ok: true, url, opened: false };
 }
 
 async function dropSession() {
@@ -163,6 +228,9 @@ async function dropSession() {
   clearTimeout(retryTimer);
   pushTimer = retryTimer = null;
   try { await fsp.unlink(authFile()); } catch { /* already gone */ }
+  // drop the offline photo cache with the account it belongs to
+  try { await fsp.unlink(avatarFile()); } catch { /* already gone */ }
+  avatar = null;
 }
 
 async function signOut() {
@@ -183,13 +251,27 @@ async function refreshSession() {
     body: { refresh_token: session.refresh_token },
   });
   if (r.status === 200 && r.json?.access_token) {
+    // Supabase returns the RAW user here — name/picture live inside
+    // user_metadata, not at the top level. Storing it raw (the old behavior)
+    // silently wiped a signed-in identity's name/picture on every hourly
+    // refresh. Normalize exactly like exchangeCode does; this also heals
+    // sessions saved by older builds (they come back email-only).
+    const u = r.json.user;
     session = {
       access_token: r.json.access_token,
       refresh_token: r.json.refresh_token || session.refresh_token,
       expires_at: Date.now() + (r.json.expires_in || 3600) * 1000,
-      user: r.json.user || session.user,
+      user: u
+        ? {
+            id: u.id,
+            email: u.email,
+            name: u.user_metadata?.name || u.email,
+            picture: u.user_metadata?.avatar_url || u.user_metadata?.picture || null,
+          }
+        : session.user,
     };
     await saveAuthState().catch(() => {});
+    saveAvatarIfChanged(); // async — download the (possibly new) photo
     return true;
   }
   if (r.status === 400 || r.status === 403) {
@@ -243,6 +325,7 @@ async function exchangeCode(code, state) {
     },
   };
   await saveAuthState().catch(() => {});
+  saveAvatarIfChanged(); // async — first download of the profile photo
   lastError = null;
   backoffStep = 0;
   syncNow(); // first pull+push with the new account
@@ -403,6 +486,7 @@ function status() {
     email: session?.user?.email || null,
     name: session?.user?.name || null,
     picture: session?.user?.picture || null,
+    pictureLocal: avatar ? '/avatar' : null,
     lastSync,
     lastError,
     syncing,
@@ -416,12 +500,55 @@ function status() {
 // BROWSER (the app's WebView never navigates here), so it may not carry the
 // app CSP — server.js sends it with its own headers.
 function page(title, body) {
-  return `<!doctype html><html><head><meta charset="utf-8"><title>${title}</title>` +
+  return `<!doctype html><html><head><meta charset="utf-8">` +
+    `<meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title>` +
     `<style>body{background:#0b0e14;color:#e8eaf0;font-family:system-ui,sans-serif;` +
     `display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}` +
     `div{text-align:center;max-width:420px;padding:24px}h1{font-size:18px;font-weight:700}` +
     `p{color:#8a92a0;font-size:14px;line-height:1.5}</style></head>` +
     `<body><div><h1>${title}</h1><p>${body}</p></div></body></html>`;
+}
+
+// Sent to the browser IMMEDIATELY on /auth/callback — the token exchange runs
+// in the background (it can retry for up to ~2min on a flaky mobile network,
+// and the tab must not spin through all of it). This page polls the app's own
+// status endpoint (same origin) and flips to success the moment it lands.
+function finishingPage() {
+  return `<!doctype html><html><head><meta charset="utf-8">` +
+    `<meta name="viewport" content="width=device-width,initial-scale=1"><title>Signing in…</title>` +
+    `<style>body{background:#0b0e14;color:#e8eaf0;font-family:system-ui,sans-serif;` +
+    `display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}` +
+    `div{text-align:center;max-width:420px;padding:24px}h1{font-size:18px;font-weight:700}` +
+    `p{color:#8a92a0;font-size:14px;line-height:1.5}</style></head>` +
+    `<body><div><h1 id="t">Finishing sign-in…</h1>` +
+    `<p id="m">Talking to the sync server — this only takes a moment.</p></div>` +
+    `<script>(function(){
+  var t = document.getElementById('t'), m = document.getElementById('m'), tries = 0;
+  function done(email){
+    t.textContent = 'Signed in ✓';
+    m.innerHTML = 'Signed in as <b>' + email + '</b>. Closing this window…';
+    // desktop: this page runs in the app's in-app browser window — close it
+    // once the user has had a moment to see the confirmation
+    setTimeout(function(){ try { window.close(); } catch (e) { /* system browser tab */ } }, 1500);
+  }
+  function fail(msg){
+    t.textContent = 'Sign-in problem';
+    m.textContent = msg + ' You can close this tab and try again from the app.';
+  }
+  function tick(){
+    tries++;
+    fetch('/api/auth/status').then(function(r){ return r.json(); }).then(function(s){
+      if (s.signedIn) return done(s.email || 'your account');
+      if (s.lastError && tries > 4) return fail(s.lastError);
+      if (tries > 30) return fail('Still not signed in after 30 seconds.');
+      setTimeout(tick, 1000);
+    }).catch(function(){
+      if (tries > 30) return fail('Could not reach the app.');
+      setTimeout(tick, 1000);
+    });
+  }
+  tick();
+})();</script></body></html>`;
 }
 
 function handleCallback(q) {
@@ -434,24 +561,61 @@ function handleCallback(q) {
   const code = q.get('code');
   const state = q.get('state'); // Supabase doesn't echo state back — optional
   if (!code) {
-    // a bare callback (no code) also covers the cancelled/legacy-flow cases
+    // a bare callback (no code) — but if a duplicate/prefetched callback
+    // already completed the exchange, the session is live now: show success
+    if (session && session.user) {
+      return { status: 200, html: page('Signed in', `Signed in as <b>${session.user.email}</b>. You can close this tab and return to the app.`) };
+    }
     return { status: 200, html: page('Sign-in incomplete', 'The sign-in link was missing its code. Close this tab and start again from the app.') };
   }
-  return exchangeCode(code, state).then((r) => {
-    if (r.ok) {
-      return {
-        status: 200,
-        html: page('Signed in', `Signed in as <b>${r.email}</b>. All synced. You can close this tab and return to the app.`),
-      };
-    }
-    return { status: 200, html: page('Sign-in problem', `${r.error}. You can close this tab and try again from the app.`) };
-  }).catch((e) => ({
-    status: 200,
-    html: page('Sign-in problem', `${e.message}. You can close this tab and try again from the app.`),
-  }));
+  // Run the exchange in the BACKGROUND and answer the browser at once — the
+  // token round-trip can retry for minutes on mobile networks and the tab must
+  // not spin through it. The finishing page polls /api/auth/status until the
+  // session (or an error) shows up. Browsers can also fire the callback twice
+  // (prefetch + navigation): exchanging=true makes the second one just wait.
+  if (code && pending && !exchanging) {
+    exchanging = true;
+    exchangeCode(code, state)
+      .catch(() => { /* the page's poll surfaces lastError */ })
+      .finally(() => { exchanging = false; });
+  }
+  if (exchanging || (session && session.user)) {
+    return { status: 200, html: finishingPage() };
+  }
+  return { status: 200, html: page('Sign-in problem', 'No sign-in in progress — start again from the app.') };
 }
 
 // ---- lifecycle -------------------------------------------------------------
+
+// Sessions saved by older builds carry a raw / email-only user (no name or
+// picture — refreshSession used to store Supabase's raw user object, and some
+// early exchangeCode versions stored neither). Heals the identity at boot so
+// the profile page and topbar avatar fill in without waiting for the next
+// token refresh. Best-effort: a failure here must never block startup.
+async function healIdentity() {
+  try {
+    if (!session || !session.user || !session.access_token) return;
+    if (session.user.name && session.user.picture) return; // nothing to heal
+    const r = await reqJson('GET', `${apiBase()}/auth/v1/user`, {
+      headers: {
+        apikey: SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${session.access_token}`,
+      },
+    });
+    if (r.status !== 200 || !r.json?.id) return;
+    session.user = {
+      id: r.json.id,
+      email: r.json.email,
+      name: r.json.user_metadata?.name || r.json.email,
+      picture: r.json.user_metadata?.avatar_url || r.json.user_metadata?.picture || null,
+    };
+    await saveAuthState().catch(() => {});
+    console.log('[cloud] healed identity metadata for', session.user.email);
+    saveAvatarIfChanged(); // healed picture likely isn't cached yet
+  } catch (e) {
+    console.warn('[cloud] healIdentity:', e.message);
+  }
+}
 
 function init(opts) {
   try {
@@ -461,7 +625,11 @@ function init(opts) {
     if (!configured) { console.log('[cloud] not configured — sync disabled'); return; }
     (async () => {
       await loadAuthState();
-      if (session) syncNow(); // boot pull+push
+      if (session) {
+        healIdentity(); // async — sync below doesn't depend on it
+        saveAvatarIfChanged(); // top up the offline photo cache
+        syncNow(); // boot pull+push
+      }
     })().catch((e) => console.warn('[cloud] init:', e.message));
   } catch { /* never block boot */ }
 }
@@ -476,6 +644,7 @@ module.exports = {
   syncNow,
   handleCallback,
   callbackPath: CALLBACK_PATH,
+  avatarInfo,
   AUTH_PORT,
   // exposed for tests
   _merge: { mergeDicts, mergePrefs, pruneTombstones },

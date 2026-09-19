@@ -523,6 +523,22 @@ async function route(req, res) {
     return sendJson(res, 200, cloudMod().status());
   }
 
+  // The cached profile photo (downloaded by cloud.js so the avatar works
+  // offline). Served as "self" so the app CSP's img-src allows it.
+  if (p === '/avatar') {
+    const info = cloudMod().avatarInfo();
+    if (!info) { res.writeHead(404, { 'Content-Type': 'text/plain' }); return res.end('not found'); }
+    return fs.readFile(info.path, (err, buf) => {
+      if (err) { res.writeHead(404, { 'Content-Type': 'text/plain' }); return res.end('not found'); }
+      res.writeHead(200, {
+        'Content-Type': info.type,
+        'Content-Length': buf.length,
+        'Cache-Control': 'no-cache', // URL is stable; 304s would outlive sign-out
+      });
+      res.end(buf);
+    });
+  }
+
   return serveStatic(req, res, p);
 }
 

@@ -58,6 +58,7 @@ body {
   white-space: nowrap;
 }
 #brand img { height: 44px; width: auto; display: block; }
+
 #searchForm {
   flex: 1;
   max-width: 560px;
@@ -217,30 +218,73 @@ body {
 }
 .notif-item .notif-sub { font-size: 11px; color: var(--accent); }
 .notif-item .notif-hint { font-size: 10px; color: var(--muted); }
-#settingsBtn {
+/* navbar avatar: the signed-in user's photo — tapping it opens the profile */
+#accountBtn {
   background: var(--bg3);
   border: 1px solid var(--border);
-  color: var(--muted);
-  border-radius: var(--radius);
-  padding: 9px 14px;
+  border-radius: 999px;
+  padding: 3px;
   cursor: pointer;
-  font-size: 14px;
-  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
 }
-#settingsBtn:hover { color: var(--text); border-color: var(--accent-dim); }
-#settingsPanel {
-  position: absolute;
-  top: calc(100% + 8px);
-  right: 0;
-  width: 280px;
+#accountBtn:hover { color: var(--text); border-color: var(--accent-dim); }
+#accountAvatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  object-fit: cover;
+  display: block;
+  background: var(--bg2);
+}
+#accountFallback { width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; }
+#accountFallback .icon { width: 18px; height: 18px; }
+
+/* ---- profile / settings topbar swap ----
+   The profile page replaces the navbar with a round back + settings pair
+   (body.on-profile); the settings page with a lone round back
+   (body.on-settings). Both classes are toggled by showView. */
+.round-btn {
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  flex: none;
+  display: none;               /* invisible everywhere but the pages above */
+  align-items: center;
+  justify-content: center;
   background: var(--bg3);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 14px 16px;
-  z-index: 40;
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+  border-radius: 50%;
+  color: var(--muted);
+  cursor: pointer;
 }
-#settingsPanel h3 { font-size: 14px; margin-bottom: 10px; color: var(--text); }
+.round-btn:hover { color: var(--text); border-color: var(--accent-dim); }
+.round-btn .icon { width: 20px; height: 20px; }
+/* :not([hidden]) — display beats the attribute's UA rule, so the back button
+   must opt in explicitly or it would show even with no trail to unwind */
+body.on-profile .round-btn:not([hidden]) { display: inline-flex; }
+body.on-settings #backBtn:not([hidden]) { display: inline-flex; }
+body.on-profile #profileGearBtn { margin-left: auto; }   /* pin the gear to the right edge */
+body.on-profile #sidebarBtn,
+body.on-profile #brand,
+body.on-profile #searchForm,
+body.on-profile #topbar-right,
+body.on-settings #sidebarBtn,
+body.on-settings #brand,
+body.on-settings #searchForm,
+body.on-settings #topbar-right { display: none; }
+
+/* ---- settings page (the navbar gear and the profile's round gear both open it) ---- */
+#settingsCard {
+  max-width: 520px;
+  margin: 8px auto 0;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 22px;
+}
 .setting-row {
   display: flex;
   flex-direction: column;
@@ -257,15 +301,35 @@ body {
   padding: 7px 10px;
   font-size: 13px;
 }
-#settingsPanel .hint { font-size: 11px; overflow-wrap: break-word; }
+#settingsCard .hint { font-size: 11px; overflow-wrap: break-word; }
 .setting-sep { border: none; border-top: 1px solid var(--border); margin: 12px 0; }
 
-#favEmpty {
+/* favorites + watching tabs — live on the profile page, under the profile card */
+#profileLists {
+  max-width: 780px;
+  margin: 26px auto 0;
+}
+#profileTabs {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+#profileTabs .pill-btn { padding: 7px 24px; font-size: 13px; }
+#profileTabs .pill-btn.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #06231f;
+  font-weight: 600;
+}
+#favEmpty,
+#watchEmpty {
   text-align: center;
-  margin-top: 12vh;
+  margin-top: 24px;
   color: var(--muted);
 }
 #favEmpty .empty-icon { font-size: 44px; color: var(--danger); opacity: 0.6; }
+#watchEmpty .empty-icon { font-size: 44px; color: var(--accent); opacity: 0.6; }
 
 /* ---- update banner / settings row ---- */
 #updateBanner {
@@ -302,24 +366,32 @@ body {
 .update-row span { font-size: 12px; color: var(--muted); }
 #favEmpty p { margin: 8px 0; }
 
-/* ---- profile page ---- */
+/* ---- profile page — centered identity card, avatar overlaps the top edge ---- */
 #profileCard {
   max-width: 520px;
-  margin: 8px auto 0;
+  margin: 56px auto 0;   /* leaves room for the half-overlapping avatar */
   background: var(--bg2);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 22px;
+  padding: 0 22px 20px;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  align-items: center;
+  gap: 8px;
+  text-align: center;
 }
-#profileHead { display: flex; align-items: center; gap: 16px; }
+#profileAvatarWrap {
+  width: 92px;
+  height: 92px;
+  margin-top: -46px;   /* half in, half out of the card */
+  flex: none;
+}
 #profileAvatar, #profileAvatarFallback {
-  width: 72px;
-  height: 72px;
+  width: 100%;
+  height: 100%;
   border-radius: 50%;
-  border: 2px solid var(--accent-dim);
+  border: 3px solid var(--bg2);   /* ring in the card's own color so the overlap reads cleanly */
+  box-shadow: 0 0 0 1px var(--border);
   flex: none;
 }
 #profileAvatar { object-fit: cover; background: var(--bg3); }
@@ -327,42 +399,44 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 30px;
+  font-size: 34px;
   font-weight: 700;
   color: var(--accent);
   background: var(--bg3);
 }
-#profileIdent { min-width: 0; }
-#profileName { font-size: 18px; font-weight: 700; overflow-wrap: anywhere; }
-#profileEmail { overflow-wrap: anywhere; }
-#profileStats { display: flex; gap: 12px; }
-.pstat {
-  flex: 1;
-  background: var(--bg3);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 12px 8px;
-  text-align: center;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.pstat span { font-size: 20px; font-weight: 700; color: var(--accent); }
-.pstat em { font-style: normal; font-size: 11px; color: var(--muted); }
-#profileSyncLine {
+#profileAvatarFallback .icon { width: 34px; height: 34px; }
+#profileNameRow { display: flex; align-items: center; gap: 6px; margin-top: 2px; min-width: 0; }
+#profileName { font-size: 20px; font-weight: 700; overflow-wrap: anywhere; }
+#profileVerified {
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #0b0e14;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  font-size: 13px;
+  justify-content: center;
+  flex: none;
 }
-#profileActions { display: flex; gap: 10px; flex-wrap: wrap; }
+#profileVerified .icon { width: 11px; height: 11px; }
+#profileEmail { margin: 0; overflow-wrap: anywhere; }
+#profileFollowLine { font-size: 13px; color: var(--muted); }
+#profileFollowLine b { color: var(--text); font-weight: 700; }
+#profileActions { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; margin-top: 4px; }
+#profileActions .pill-btn { padding: 8px 16px; }
+.pill-accent {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #0b0e14;
+  font-weight: 600;
+}
+.pill-accent:hover { border-color: var(--accent); filter: brightness(1.12); }
 @media (max-width: 540px) {
-  #profileCard { padding: 16px; gap: 14px; }
-  #profileAvatar, #profileAvatarFallback { width: 56px; height: 56px; }
-  #profileAvatarFallback { font-size: 24px; }
-  #profileName { font-size: 16px; }
-  .pstat span { font-size: 16px; }
+  #profileCard { margin-top: 44px; padding: 0 16px 16px; }
+  #profileAvatarWrap { width: 76px; height: 76px; margin-top: -38px; }
+  #profileAvatarFallback { font-size: 28px; }
+  #profileAvatarFallback .icon { width: 28px; height: 28px; }
+  #profileName { font-size: 17px; }
 }
 
 /* ---- layout: sidebar + main ----
@@ -596,7 +670,7 @@ h2 { font-size: 16px; margin: 18px 0 12px; color: var(--muted); font-weight: 600
   gap: 12px;
 }
 .section-head h2 { margin-bottom: 0; }
-#favView .fav-btn.active { color: var(--danger); }
+#profileView .fav-btn.active { color: var(--danger); }
 
 #moreRow { text-align: center; margin: 20px 0; }
 #moreBtn, .pill-btn {
@@ -1223,8 +1297,7 @@ section:not([hidden]) { animation: fadeUp 0.24s ease; }
 .grid > *:nth-child(6) { animation-delay: 0.15s; }
 .grid > *:nth-child(7) { animation-delay: 0.18s; }
 .grid > *:nth-child(n+8) { animation-delay: 0.21s; }
-#notifPanel:not([hidden]),
-#settingsPanel:not([hidden]) { animation: popIn 0.18s ease; }
+#notifPanel:not([hidden]) { animation: popIn 0.18s ease; }
 #toast:not([hidden]) { animation: fadeUp 0.2s ease; }
 button, select, .back-btn, .pill-btn {
   transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
@@ -1247,6 +1320,36 @@ button, select, .back-btn, .pill-btn {
   justify-content: center;
   padding: 18px;
 }
+
+/* ---- login gate ----
+   full-screen, opaque: the app behind is unusable until signed in. Sits above
+   everything including the T&C gate — an account comes first. */
+#loginGate {
+  position: fixed;
+  inset: 0;
+  z-index: 210;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 24px;
+}
+#loginGate[hidden] { display: none; }
+#loginGate .login-logo {
+  width: 200px;
+  max-width: 60vw;
+  margin-bottom: 14px;
+}
+#loginGate h2 { margin: 0 0 6px; }
+#loginGate .hint { max-width: 440px; }
+#loginGate .pill-accent {
+  margin-top: 16px;
+  padding: 10px 26px;
+  font-size: 14px;
+}
+#loginGate #loginStatus { min-height: 1.4em; margin-top: 12px; }
 #tosPanel {
   width: 100%;
   max-width: 560px;
@@ -1412,12 +1515,12 @@ button, select, .back-btn, .pill-btn {
   #searchForm { order: 5; flex: 1 1 100%; max-width: none; margin: 0; }
   #searchForm button { display: none; }        /* the soft keyboard's search key submits */
   #searchInput { font-size: 16px; padding: 10px 12px; }   /* 16px: no focus zoom */
-  #settingsBtn { padding: 11px 12px; }
-  #settingsBtn .btn-label { display: none; }
   #sidebarBtn, #notifBtn { padding: 11px 12px; min-width: 44px; min-height: 44px; }
+  #accountBtn { padding: 6px; min-width: 44px; min-height: 44px; }   /* 44px tap target around the avatar */
+  .round-btn { width: 44px; height: 44px; }   /* profile/settings swap buttons: tappable */
 
   /* ---- fixed-width panels become bottom sheets ---- */
-  #notifPanel, #settingsPanel {
+  #notifPanel {
     position: fixed;
     left: 8px; right: 8px; bottom: 8px; top: auto;
     width: auto;
@@ -1567,16 +1670,13 @@ button, select, .back-btn, .pill-btn {
   /* dropdown panels: anchor to the viewport — the bell/settings icons sit
      mid-screen on phones, so their right-anchored 300/280px panels would hang
      off the left edge */
-  #notifPanel,
-  #settingsPanel {
+  #notifPanel {
     position: fixed;
     top: 64px;
     left: 10px;
     right: 10px;
     width: auto;
   }
-  #settingsBtn .btn-label { display: none; }
-  #settingsBtn { padding: 9px 11px; }
   #searchForm button { padding: 9px 12px; }
   section { padding: 14px 12px; }
 

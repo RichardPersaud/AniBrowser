@@ -1,7 +1,7 @@
 'use strict';
 const path = require('path');
 const os = require('os');
-const { app, BrowserWindow, Menu, shell } = require('electron');
+const { app, BrowserWindow, Menu } = require('electron');
 const { start } = require('./server');
 const { initUpdater } = require('./updater');
 
@@ -20,6 +20,21 @@ process.on('unhandledRejection', (e) => {
   console.error('[suppressed unhandledRejection]', e && (e.stack || e.message || e));
 });
 
+// in-app browser: sign-in (and any other http link the UI opens) loads in a
+// child window instead of the system browser, so the OAuth round-trip never
+// leaves the app. The sign-in finishing page window.close()s itself when the
+// session lands.
+function openInAppBrowser(url) {
+  const w = new BrowserWindow({
+    width: 520,
+    height: 760,
+    backgroundColor: '#0b0e14',
+    autoHideMenuBar: true,
+    title: 'AniNinja',
+  });
+  w.loadURL(url);
+}
+
 async function createWindow(port) {
   const win = new BrowserWindow({
     width: 1280,
@@ -35,7 +50,7 @@ async function createWindow(port) {
     },
   });
   win.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith('http')) shell.openExternal(url);
+    if (url.startsWith('http')) openInAppBrowser(url);
     return { action: 'deny' };
   });
   await win.loadURL(`http://127.0.0.1:${port}/`);

@@ -25,12 +25,27 @@
     <symbol id="i-user" viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></symbol>
     <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></symbol>
     <symbol id="i-filter" viewBox="0 0 24 24"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></symbol>
   </svg>
   <div id="bootSplash">
     <img class="boot-logo" src="logo-t.png" alt="">
     <div class="spinner"></div>
   </div>
+  <!-- LOGIN GATE — a Google account is required to use the app; signing out
+       from anywhere returns here. Rendered above everything (like the T&C gate). -->
+  <div id="loginGate" hidden>
+    <img class="login-logo" src="logo-t.png" alt="AniNinja">
+    <h2>Welcome to AniNinja</h2>
+    <p class="hint">Sign in with Google to continue. Your favorites, history and settings mirror to your account and follow you across devices.</p>
+    <button id="loginBtn" class="pill-btn pill-accent"><svg class="icon"><use href="#i-user"></use></svg> Sign in with Google</button>
+    <p class="hint" id="loginStatus"></p>
+  </div>
+  <!-- TOP BAR: the standard navbar everywhere, except on the profile page
+       (round back + settings) and the settings page (round back only), where
+       it collapses — body.on-profile / body.on-settings drive the swap -->
   <header id="topbar">
+    <button id="backBtn" class="round-btn" title="Back" data-back="back" hidden><svg class="icon"><use href="#i-chev-left"></use></svg></button>
+    <button id="profileGearBtn" class="round-btn" title="Settings"><svg class="icon"><use href="#i-gear"></use></svg></button>
     <button id="sidebarBtn" title="Toggle sidebar"><svg class="icon"><use href="#i-menu"></use></svg></button>
     <div id="brand"><img src="logo-nav.png" alt="AniNinja"></div>
     <form id="searchForm" autocomplete="off">
@@ -55,62 +70,11 @@
           <p id="notifEmpty" class="hint">No notifications yet — new episodes of your favorites will show up here.</p>
         </div>
       </div>
-      <button id="settingsBtn" title="Settings"><svg class="icon"><use href="#i-gear"></use></svg> <span class="btn-label">Settings</span></button>
-      <div id="settingsPanel" hidden>
-        <h3>Settings</h3>
-        <label class="setting-row">Default video quality
-          <select id="defQualitySel">
-            <option value="auto">Auto (adaptive)</option>
-            <option value="1080">1080p</option>
-            <option value="720">720p</option>
-            <option value="480">480p</option>
-            <option value="360">360p</option>
-          </select>
-        </label>
-        <label class="setting-row">Default audio track
-          <select id="defTypeSel">
-            <option value="sub">SUB (original + subs)</option>
-            <option value="dub">DUB</option>
-          </select>
-        </label>
-        <label class="setting-row">R-rated content (18+)
-          <select id="r18Sel">
-            <option value="hide">Hide</option>
-            <option value="show">Show</option>
-          </select>
-        </label>
-        <p class="hint">Applied to new episodes you play. "Hide" removes 18+ titles from Home, Search and Browse.</p>
-        <label class="setting-row">Favorite update alerts
-          <select id="pushNotifSel">
-            <option value="on">On — system notifications</option>
-            <option value="off">Off</option>
-          </select>
-        </label>
-        <p class="hint">System notifications on Android when a favorite gets new episodes. The bell above always works.</p>
-        <hr class="setting-sep">
-        <p class="hint" id="backupHint"></p>
-        <button id="exportBtn" class="pill-btn" style="margin: 8px 0 4px">Download my data</button>
-        <p class="hint">Saves your favorites, history and settings as a JSON file in your AniNinja data folder.</p>
-        <hr class="setting-sep">
-        <label class="setting-row">Cloud sync
-          <div class="update-row">
-            <span id="syncStatusText">Off</span>
-            <button id="signInBtn" class="pill-btn" hidden><svg class="icon"><use href="#i-user"></use></svg> Sign in</button>
-            <button id="syncNowBtn" class="pill-btn" hidden><svg class="icon"><use href="#i-refresh"></use></svg> Sync now</button>
-            <button id="signOutBtn" class="pill-btn" hidden>Sign out</button>
-          </div>
-        </label>
-        <p class="hint" id="syncHint">Sign in with Google to keep favorites, history and settings in sync across your devices. Everything keeps working offline without an account.</p>
-        <hr class="setting-sep">
-        <label class="setting-row">Updates
-          <div class="update-row">
-            <span id="updateStatusText">Checking…</span>
-            <button id="checkUpdateBtn" class="pill-btn"><svg class="icon"><use href="#i-refresh"></use></svg> Check now</button>
-          </div>
-        </label>
-        <hr class="setting-sep">
-        <p class="hint" id="appVersion">AniNinja</p>
-      </div>
+      <!-- the signed-in user's photo — tapping it opens the profile page -->
+      <button id="accountBtn" title="Profile">
+        <img id="accountAvatar" alt="" hidden>
+        <span id="accountFallback" hidden><svg class="icon"><use href="#i-user"></use></svg></span>
+      </button>
     </div>
   </header>
   <div id="scrim"></div>
@@ -121,8 +85,6 @@
       <nav class="side-group">
         <button class="side-item" data-nav="home"><span class="side-ico"><svg class="icon"><use href="#i-home"></use></svg></span> Home</button>
         <button class="side-item" data-nav="browse"><span class="side-ico"><svg class="icon"><use href="#i-grid"></use></svg></span> Browse</button>
-        <button class="side-item" data-nav="favorites"><span class="side-ico"><svg class="icon"><use href="#i-heart"></use></svg></span> Favorites <span id="favCount" class="side-badge" hidden></span></button>
-        <button class="side-item" data-nav="profile"><span class="side-ico"><svg class="icon"><use href="#i-user"></use></svg></span> Profile</button>
       </nav>
       <div class="side-foot">AniNinja <span id="sideVersion"></span></div>
     </aside>
@@ -212,43 +174,109 @@
       </section>
 
       <!-- FAVORITES -->
-      <section id="favView" hidden>
-        <h2>Favorites</h2>
-        <div id="favGrid" class="grid"></div>
-        <div id="favEmpty">
-          <div class="empty-icon"><svg><use href="#i-heart"></use></svg></div>
-          <p>No favorites yet.</p>
-          <p class="hint">Hit the ♥ on any poster to pin it here.</p>
+      <!-- PROFILE -->
+      <section id="profileView" hidden>
+        <div id="profileCard">
+          <div id="profileAvatarWrap">
+            <img id="profileAvatar" alt="" hidden>
+            <span id="profileAvatarFallback" hidden></span>
+          </div>
+          <div id="profileNameRow">
+            <span id="profileName"></span>
+            <span id="profileVerified" hidden><svg class="icon"><use href="#i-check"></use></svg></span>
+          </div>
+          <div id="profileEmail" class="hint"></div>
+          <div id="profileFollowLine"><b id="statFavs">0</b> favorites&nbsp;&middot;&nbsp;<b id="statWatched">0</b> watching</div>
+          <div id="profileActions">
+            <button id="profileSignIn" class="pill-btn pill-accent" hidden><svg class="icon"><use href="#i-user"></use></svg> Sign in with Google</button>
+            <button id="profileSyncNow" class="pill-btn pill-accent" hidden><svg class="icon"><use href="#i-refresh"></use></svg> Sync now</button>
+            <button id="profileSignOut" class="pill-btn" hidden>Sign out</button>
+          </div>
+          <p class="hint" id="profileSyncDetail"></p>
+          <p class="hint">Favorites, history and settings live on this device and mirror to your account whenever you're online — the app works fully offline either way.</p>
+        </div>
+        <!-- favorites + watching live on the profile page (the sidebar has no favorites tab) -->
+        <div id="profileLists">
+          <div id="profileTabs">
+            <button id="tabFavs" class="pill-btn active">Favorites</button>
+            <button id="tabWatch" class="pill-btn">Watching</button>
+          </div>
+          <div id="paneFavs">
+            <div id="favGrid" class="grid"></div>
+            <div id="favEmpty" hidden>
+              <div class="empty-icon"><svg><use href="#i-heart"></use></svg></div>
+              <p>No favorites yet.</p>
+              <p class="hint">Hit the ♥ on any poster to pin it here.</p>
+            </div>
+          </div>
+          <div id="paneWatch" hidden>
+            <div id="watchGrid" class="grid"></div>
+            <div id="watchEmpty" hidden>
+              <div class="empty-icon"><svg><use href="#i-play"></use></svg></div>
+              <p>Nothing watched yet.</p>
+              <p class="hint">Start an episode and it'll show up here.</p>
+            </div>
+          </div>
         </div>
       </section>
 
-      <!-- PROFILE -->
-      <section id="profileView" hidden>
-        <h2>Profile</h2>
-        <div id="profileCard">
-          <div id="profileHead">
-            <img id="profileAvatar" alt="" hidden>
-            <span id="profileAvatarFallback" hidden></span>
-            <div id="profileIdent">
-              <div id="profileName"></div>
-              <div id="profileEmail" class="hint"></div>
+      <!-- SETTINGS — opened from the profile page's round gear; the navbar here
+           is just the round back button -->
+      <section id="settingsView" hidden>
+        <h2>Settings</h2>
+        <div id="settingsCard">
+          <label class="setting-row">Default video quality
+            <select id="defQualitySel">
+              <option value="auto">Auto (adaptive)</option>
+              <option value="1080">1080p</option>
+              <option value="720">720p</option>
+              <option value="480">480p</option>
+              <option value="360">360p</option>
+            </select>
+          </label>
+          <label class="setting-row">Default audio track
+            <select id="defTypeSel">
+              <option value="sub">SUB (original + subs)</option>
+              <option value="dub">DUB</option>
+            </select>
+          </label>
+          <label class="setting-row">R-rated content (18+)
+            <select id="r18Sel">
+              <option value="hide">Hide</option>
+              <option value="show">Show</option>
+            </select>
+          </label>
+          <p class="hint">Applied to new episodes you play. "Hide" removes 18+ titles from Home, Search and Browse.</p>
+          <label class="setting-row">Favorite update alerts
+            <select id="pushNotifSel">
+              <option value="on">On — system notifications</option>
+              <option value="off">Off</option>
+            </select>
+          </label>
+          <p class="hint">A toast (plus a system notification on Android) when a favorite gets new episodes.</p>
+          <hr class="setting-sep">
+          <p class="hint" id="backupHint"></p>
+          <button id="exportBtn" class="pill-btn" style="margin: 8px 0 4px">Download my data</button>
+          <p class="hint">Saves your favorites, history and settings as a JSON file in your AniNinja data folder.</p>
+          <hr class="setting-sep">
+          <label class="setting-row">Cloud sync
+            <div class="update-row">
+              <span id="syncStatusText">Off</span>
+              <button id="signInBtn" class="pill-btn" hidden><svg class="icon"><use href="#i-user"></use></svg> Sign in</button>
+              <button id="syncNowBtn" class="pill-btn" hidden><svg class="icon"><use href="#i-refresh"></use></svg> Sync now</button>
+              <button id="signOutBtn" class="pill-btn" hidden>Sign out</button>
             </div>
-          </div>
-          <div id="profileStats">
-            <div class="pstat"><span id="statFavs">0</span><em>Favorites</em></div>
-            <div class="pstat"><span id="statWatched">0</span><em>Watching</em></div>
-            <div class="pstat"><span id="statSynced">—</span><em>Last synced</em></div>
-          </div>
-          <div id="profileSyncLine">
-            <span id="profileSyncState"></span>
-            <button id="profileSyncNow" class="pill-btn" hidden><svg class="icon"><use href="#i-refresh"></use></svg> Sync now</button>
-          </div>
-          <p class="hint" id="profileSyncDetail"></p>
-          <div id="profileActions">
-            <button id="profileSignIn" class="pill-btn" hidden><svg class="icon"><use href="#i-user"></use></svg> Sign in with Google</button>
-            <button id="profileSignOut" class="pill-btn" hidden>Sign out</button>
-          </div>
-          <p class="hint">Favorites, history and settings live on this device and mirror to your account whenever you're online — the app works fully offline either way.</p>
+          </label>
+          <p class="hint" id="syncHint">Sign in with Google to keep favorites, history and settings in sync across your devices. Everything keeps working offline without an account.</p>
+          <hr class="setting-sep">
+          <label class="setting-row">Updates
+            <div class="update-row">
+              <span id="updateStatusText">Checking…</span>
+              <button id="checkUpdateBtn" class="pill-btn"><svg class="icon"><use href="#i-refresh"></use></svg> Check now</button>
+            </div>
+          </label>
+          <hr class="setting-sep">
+          <p class="hint" id="appVersion">AniNinja</p>
         </div>
       </section>
 
@@ -350,6 +378,7 @@
       <button id="searchOverlayClose" title="Close search"><svg class="icon"><use href="#i-x"></use></svg></button>
     </div>
   </div>
+
   <div id="miniPlayer" hidden>
     <div id="miniBar">
       <span id="miniTitle"></span>
