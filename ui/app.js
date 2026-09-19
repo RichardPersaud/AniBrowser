@@ -163,7 +163,6 @@ async function restoreFromBackup() {
         favorites: { ...fb, ...getTombstones().favorites },
         progress: { ...pb, ...getTombstones().progress },
       }));
-      updateFavCount();
     }
   } catch { /* backup is best-effort */ }
   // write once at startup so the file exists from the first run onward
@@ -191,15 +190,7 @@ function toggleFav(r) {
     toast('Added to favorites ♥');
   }
   setFavs(f);
-  updateFavCount();
   return !!f[r.slug];
-}
-
-function updateFavCount() {
-  const n = Object.keys(getFavs()).length;
-  const badge = $('favCount');
-  badge.textContent = String(n);
-  badge.hidden = n === 0;
 }
 
 // heart button overlaid on a poster card
@@ -217,8 +208,8 @@ function attachFavBtn(card, r) {
     document.querySelectorAll('.fav-btn').forEach((b) => {
       if (b._slug === r.slug) b.classList.toggle('active', on);
     });
-    // in the favorites view the un-favorited card drops out of the grid
-    if (!on && state.view === 'favView') renderFavorites();
+    // on the profile page the un-favorited card drops out of the grid
+    if (!on && !$('profileView').hidden) renderFavorites();
   });
   fav._slug = r.slug;
   card.appendChild(fav);
@@ -232,8 +223,68 @@ function renderFavorites() {
   grid.innerHTML = '';
   for (const r of items) grid.appendChild(makeCard(r));
   $('favEmpty').hidden = items.length > 0;
-  updateFavCount();
 }
+
+// the profile page's "Watching" tab — same resume cards as the home row,
+// but the full history instead of the latest 12
+function renderWatching() {
+  const items = Object.entries(getJSON())
+    .map(([slug, v]) => ({ slug, ...v }))
+    .filter((v) => v.title && v.epNum)
+    .sort((a, b) => (b.ts || 0) - (a.ts || 0));
+  const grid = $('watchGrid');
+  grid.innerHTML = '';
+  for (const it of items) {
+    const card = el('div', 'card');
+    const img = el('img');
+    if (it.poster) img.src = it.poster;
+    img.loading = 'lazy';
+    card.appendChild(img);
+    card.appendChild(el('div', 'card-title', it.title));
+    card.title = it.title;
+    const bar = el('div', 'resume-bar');
+    const fill = el('div');
+    fill.style.width = `${Math.min(100, it.pct || 0)}%`;
+    bar.appendChild(fill);
+    card.appendChild(bar);
+    card.appendChild(el('div', 'resume-label', `EP ${it.epNum} · ${fmtTime(it.t)}`));
+    card.addEventListener('click', () => {
+      openDetail(it.slug, it.title, it.poster, () => {
+        state.epNum = it.epNum;
+        startPlayback(it.epNum, prefs().lastType || 'sub');
+      });
+    });
+    attachFavBtn(card, it);
+    // ✕ to drop this show from the watch history
+    const rm = el('button', 'fav-btn remove-btn');
+    rm.innerHTML = icon('x');
+    rm.title = 'Remove from watch history';
+    rm.addEventListener('click', (e) => {
+      e.stopPropagation(); // don't open the card's detail view
+      const all = getJSON();
+      delete all[it.slug];
+      addTombstone('progress', it.slug); // sync: keep it deleted on other devices
+      setJSON(all); // also schedules a backup write
+      toast(`Removed "${it.title}" from history`);
+      renderWatching();
+      renderContinue();
+    });
+    card.appendChild(rm);
+    grid.appendChild(card);
+  }
+  $('watchEmpty').hidden = items.length > 0;
+}
+
+// profile page tabs: Favorites / Watching
+function showProfileTab(watch) {
+  $('tabFavs').classList.toggle('active', !watch);
+  $('tabWatch').classList.toggle('active', watch);
+  $('paneFavs').hidden = watch;
+  $('paneWatch').hidden = !watch;
+  if (watch) renderWatching();
+}
+$('tabFavs').addEventListener('click', () => showProfileTab(false));
+$('tabWatch').addEventListener('click', () => showProfileTab(true));
 
 /* ---------------- new-episode notifications ---------------- */
 
@@ -393,17 +444,18 @@ function toast(msg, isErr = false) {
 }
 
 function showView(name) {
-  for (const v of ['homeView', 'browseView', 'favView', 'detailView', 'playerView', 'collectionView', 'profileView']) {
+  for (const v of ['homeView', 'browseView', 'detailView', 'playerView', 'collectionView', 'profileView', 'settingsView']) {
     $(v).hidden = v !== name;
   }
-  const navKey = name === 'favView' ? 'favorites'
-    : name === 'browseView' ? 'browse'
-    : name === 'profileView' ? 'profile'
-    : name === 'homeView' ? 'home' : null;
-  document.querySelectorAll('.side-item').forEach((b) =>
-    b.classList.toggle('active', !!navKey && b.dataset.nav === navKey)
-  );
   state.view = name;
+  // the profile page swaps the navbar for a round back + settings pair, and
+  // the settings page for a lone round back; everywhere else the standard
+  // navbar shows. The back button appears once there's a trail to unwind
+  // (topNav always leaves one when leaving a view).
+  const bare = name === 'profileView' || name === 'settingsView';
+  document.body.classList.toggle('on-profile', name === 'profileView');
+  document.body.classList.toggle('on-settings', name === 'settingsView');
+  $('backBtn').hidden = !bare || histStack.length === 0;
   $('main').scrollTop = 0;
 }
 
@@ -437,8 +489,9 @@ window.addEventListener('popstate', () => restoreHist());
 // re-show a view-level snapshot without re-pushing history
 function restoreView(v) {
   if (v === 'browseView') showView('browseView');
-  else if (v === 'favView') { renderFavorites(); showView('favView'); }
+  else if (v === 'profileView') { renderProfile(); showView('profileView'); }
   else if (v === 'detailView') showView('detailView');
+  else if (v === 'settingsView' || v === 'collectionView') showView(v);
   else if (v === 'playerView') { stopPlayback(); showView('detailView'); renderEpisodes(); }
   else {
     // home: keep any active search results on screen, else the home sections
@@ -922,11 +975,10 @@ $('miniClose').addEventListener('click', () => stopPlayback());
   bar.addEventListener('pointercancel', end);
 })();
 
-async function sidebarNav(target) {
-  // the drawer always closes on nav — the user picked a destination, the menu's
-  // job is done (on phones it would otherwise cover the content they navigated to)
-  sidebarOpen = false;
-  applySidebar();
+/* top-level page hop, shared by the sidebar and the settings-page links:
+   docks a playing episode into the mini player and leaves a history-trail
+   entry so the back button / hardware back return to where you were */
+async function topNav(target) {
   if (state.view === 'playerView') {
     // dock the video into the in-window mini player — playback survives the
     // reparent, so browsing around never interrupts an episode
@@ -938,29 +990,38 @@ async function sidebarNav(target) {
   // forward navigation leaves a trail entry — except re-tapping the view
   // you're already on (that would just stack a no-op "back to same place")
   const targetView = target === 'home' ? 'homeView'
-    : target === 'browse' ? 'browseView' : 'favView';
+    : target === 'browse' ? 'browseView'
+    : target === 'settings' ? 'settingsView' : 'profileView';
   const fromView = state.view; // capture now — state.view moves on
   if (fromView !== targetView) pushHist(() => restoreView(fromView));
   if (target === 'home') navHome();
   else if (target === 'browse') {
     showView('browseView');
-    loadBrowse();
+    loadBrowse(); // loadBrowse exits results mode — the full catalog shows
   } else if (target === 'profile') {
     renderProfile(); // fills from the last known status before the fetch lands
     pollSync(); // fresh status the moment the page opens
     showView('profileView');
+  } else if (target === 'settings') {
+    showView('settingsView');
+    pollSync(); pollUpdate(); // sync + update rows refresh the moment the page opens
   } else {
-    renderFavorites();
-    showView('favView');
+    renderProfile(); // fills from the last known status before the fetch lands
+    pollSync(); // fresh status the moment the page opens
+    showView('profileView');
   }
 }
 
 document.querySelectorAll('.side-item').forEach((b) => {
   b.addEventListener('click', () => {
     // buttons like the drawer's ✕ carry .side-item styling but no nav target —
-    // they must not fall through to the favorites branch
+    // they must not fall through to the nav branch
     if (!b.dataset.nav) return;
-    sidebarNav(b.dataset.nav); // sidebarNav closes the drawer
+    // the drawer always closes on nav — the user picked a destination, the
+    // menu's job is done (on phones it would otherwise cover the content)
+    sidebarOpen = false;
+    applySidebar();
+    topNav(b.dataset.nav);
   });
 });
 
@@ -1543,7 +1604,7 @@ function updateDetailFav() {
 $('favBtn').addEventListener('click', () => {
   toggleFav({ slug: state.slug, title: state.title, poster: state.poster });
   updateDetailFav();
-  if (!$('favView').hidden) renderFavorites();
+  if (!$('profileView').hidden) renderFavorites();
 });
 
 async function openDetail(slug, title, poster, onReady) {
@@ -1906,20 +1967,12 @@ if (prefs().autoNext) {
   $('autoNextBtn').textContent = 'Auto ON';
 }
 
-/* ---------------- settings ---------------- */
+/* ---------------- navbar avatar / profile gear ---------------- */
 
-$('settingsBtn').addEventListener('click', (e) => {
-  e.stopPropagation();
-  const opening = $('settingsPanel').hidden;
-  $('settingsPanel').hidden = !opening;
-  if (opening) pollSync(); // refresh the sync row the moment the panel shows
-});
-document.addEventListener('click', (e) => {
-  if ($('settingsPanel').hidden) return;
-  if (!$('settingsPanel').contains(e.target) && e.target !== $('settingsBtn')) {
-    $('settingsPanel').hidden = true;
-  }
-});
+// the navbar's avatar button and the profile page's round gear open their
+// pages through topNav (player docking + history trail)
+$('accountBtn').addEventListener('click', () => topNav('profile'));
+$('profileGearBtn').addEventListener('click', () => topNav('settings'));
 
 /* ---------------- cloud sync (Google via Supabase) ---------------- */
 
@@ -1950,6 +2003,40 @@ function fmtSyncWhen(ts) {
 
 function renderSyncUI(s) {
   lastSyncStatus = s;
+  // the navbar avatar mirrors the signed-in identity: the locally cached photo
+  // (pictureLocal → /avatar) when we have it — it survives offline — falling
+  // back to a generic user glyph. Kept above the render-state early return:
+  // the avatar must refresh whenever the session itself changes.
+  const navAvatar = $('accountAvatar');
+  if (s && s.signedIn && avatarSrc(s)) {
+    navAvatar.src = avatarSrc(s);
+    navAvatar.hidden = false;
+    $('accountFallback').hidden = true;
+  } else {
+    navAvatar.hidden = true;
+    navAvatar.removeAttribute('src');
+    $('accountFallback').hidden = false;
+  }
+  // auth gate: the app requires a Google account. Shown when signed out (and
+  // sign-in is actually possible); signing out anywhere lands back here, and
+  // the gate drops the moment the session appears. If the build has no cloud
+  // config or the callback port couldn't bind, gating would brick the app —
+  // those run unlocked, offline.
+  const gate = $('loginGate');
+  const wasLocked = !gate.hidden;
+  if (s.configured && s.portAvailable !== false && !s.signedIn) {
+    gate.hidden = false;
+    document.body.classList.add('auth-locked');
+  } else {
+    gate.hidden = true;
+    document.body.classList.remove('auth-locked');
+    $('loginStatus').textContent = '';
+    if (wasLocked && s.signedIn) {
+      // fresh sign-in from the gate — land on the home screen instead of
+      // whatever stale view was sitting behind it
+      showView('homeView');
+    }
+  }
   const state = JSON.stringify([s.configured, s.signedIn, s.email, s.lastSync, s.lastError, s.syncing, s.portAvailable]);
   if (state === lastSyncRender) return;
   lastSyncRender = state;
@@ -1984,6 +2071,7 @@ async function pollSync() {
       if (!boot) {
         await restoreFromBackup();
         renderFavorites();
+        if (!$('profileView').hidden) renderWatching();
         renderContinue();
         renderProfile(); // profile stats count local favorites/history
       }
@@ -1999,9 +2087,13 @@ async function startSignInFlow(btn) {
   try {
     const r = await api('/api/auth/start', {});
     if (!r.ok) throw new Error(r.error || 'Sign-in could not start');
-    if (r.url) openExternal(r.url); // desktop auto-opens too; harmless to re-open
+    // the UI owns opening the auth page: desktop routes window.open into the
+    // in-app browser window, Android into Custom Tabs (Google blocks OAuth in
+    // embedded WebViews, so never load it in the app's own WebView)
+    if (r.url) openExternal(r.url);
     $('syncHint').textContent = 'Finish signing in in your browser…';
     $('profileSyncDetail').textContent = 'Finish signing in in your browser…';
+    $('loginStatus').textContent = 'Finish signing in in your browser…';
     // the callback lands on the local server; poll until the session shows up
     clearTimeout(signInPollTimer);
     const deadline = Date.now() + 60000;
@@ -2060,54 +2152,65 @@ $('signInBtn').addEventListener('click', (e) => startSignInFlow(e.currentTarget)
 $('syncNowBtn').addEventListener('click', (e) => syncNowFlow(e.currentTarget));
 $('signOutBtn').addEventListener('click', (e) => signOutFlow(e.currentTarget));
 $('profileSignIn').addEventListener('click', (e) => startSignInFlow(e.currentTarget));
+$('loginBtn').addEventListener('click', (e) => startSignInFlow(e.currentTarget));
 $('profileSyncNow').addEventListener('click', (e) => syncNowFlow(e.currentTarget));
 $('profileSignOut').addEventListener('click', (e) => signOutFlow(e.currentTarget));
 
 /* profile page */
+
+/* the profile avatar mirrors the signed-in identity: the locally cached photo
+   (pictureLocal → /avatar) when we have it — it survives offline — falling
+   back to the remote Google URL, then a generic user glyph */
+function avatarSrc(s) {
+  return (s && (s.pictureLocal || s.picture)) || null;
+}
 
 function renderProfile(s) {
   s = s || lastSyncStatus;
   const signedIn = !!(s && s.signedIn);
   const avatar = $('profileAvatar');
   const fallback = $('profileAvatarFallback');
-  if (signedIn && s.picture) {
-    avatar.src = s.picture;
+  if (signedIn && avatarSrc(s)) {
+    avatar.src = avatarSrc(s);
     avatar.hidden = false;
     fallback.hidden = true;
   } else if (signedIn) {
     avatar.hidden = true;
     avatar.removeAttribute('src');
-    fallback.hidden = false;
     fallback.textContent = (s.name || s.email || '?').trim().charAt(0).toUpperCase();
+    fallback.hidden = false;
   } else {
     avatar.hidden = true;
     avatar.removeAttribute('src');
-    fallback.hidden = true;
+    fallback.innerHTML = icon('user'); // generic glyph when signed out
+    fallback.hidden = false;
   }
   $('profileName').textContent = signedIn ? (s.name || s.email) : 'Not signed in';
   $('profileEmail').textContent = signedIn && s.name ? s.email : '';
+  $('profileVerified').hidden = !signedIn;
 
   $('statFavs').textContent = String(Object.keys(getFavs()).length);
   $('statWatched').textContent = String(Object.keys(getJSON()).length);
-  $('statSynced').textContent = signedIn && s.lastSync ? fmtSyncWhen(s.lastSync) : '—';
 
-  const syncState = $('profileSyncState');
+  // one sync line — the state and the explanation merged
   const detail = $('profileSyncDetail');
   if (!s || !s.configured) {
-    syncState.textContent = 'Cloud sync is off';
-    detail.textContent = 'Sign in with Google to mirror your favorites, history and settings across your devices.';
+    detail.textContent = 'Cloud sync is off — sign in with Google to mirror your favorites, history and settings across your devices.';
   } else if (signedIn) {
-    syncState.textContent = s.syncing ? 'Syncing…' : 'Syncing automatically';
-    detail.textContent = s.lastError
+    detail.textContent = s.syncing ? 'Syncing…'
+      : s.lastError
       ? `Will retry — ${s.lastError}`
+      : s.lastSync
+      ? `Last synced ${fmtSyncWhen(s.lastSync)}`
       : 'Your data mirrors to your account whenever this device is online.';
   } else {
-    syncState.textContent = 'Cloud sync is off';
     detail.textContent = s.lastError ? `Last attempt failed — ${s.lastError}` : 'Sign in to keep everything in sync across your devices.';
   }
   $('profileSignIn').hidden = !s || !s.configured || signedIn;
   $('profileSyncNow').hidden = !signedIn;
   $('profileSignOut').hidden = !signedIn;
+  renderFavorites(); // the favorites list lives on this page — keep it current
+  if (!$('paneWatch').hidden) renderWatching();
 }
 
 const defQualitySel = $('defQualitySel');
@@ -2139,7 +2242,7 @@ r18Sel.addEventListener('change', () => {
   toast(`18+ content ${hidden} — refreshing this view`);
   // re-apply to whatever is on screen right now
   if (state.view === 'browseView') loadBrowse();
-  else if (state.view === 'favView') { /* favorites keep showing what you saved */ }
+  else if (state.view === 'profileView') { /* favorites keep showing what you saved */ }
   else {
     // home view: redo the current content (search results or recent cards)
     if (!$('resultsSection').hidden && state.query) loadResults(false);
@@ -2291,11 +2394,18 @@ $('updateAction').addEventListener('click', async () => {
   }
   const action = updateState === 'ready' ? 'install' : 'download';
   if (action === 'download' && updateState === 'downloading') return; // already running
+  if (action === 'download') {
+    // optimistic: the download POST only returns once the download itself is
+    // done, so show the progress bar now — this also flips updateState, which
+    // starts the 1s poll that streams real progress in while it runs
+    renderUpdateUI({ ...(lastUpdate || {}), state: 'downloading', progress: 0 });
+  }
   try {
     await api('/api/update', { action });
-    pollUpdate(); // don't wait for the 30s poll — show the progress bar now
+    pollUpdate(); // pick up the final state (ready / error)
   } catch (e) {
     toast('Update failed: ' + e.message, true);
+    pollUpdate(); // pull the real state back in (failure reverts to available)
   }
 });
 $('updateDismiss').addEventListener('click', () => {
@@ -2401,7 +2511,6 @@ function hideSplash() {
   showTosGate(); // first launch only — overlays the boot splash until accepted
   applySidebar();
   initBrowseUI();
-  updateFavCount();
   renderNotifPanel(); // restore badge/panel state saved before the last close
   renderContinue();
   await loadRecent(); // home is ready once the recently-updated grid lands

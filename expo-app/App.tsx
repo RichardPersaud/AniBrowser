@@ -4,7 +4,6 @@ import {
   AppState,
   BackHandler,
   Image,
-  Linking,
   StatusBar,
   StyleSheet,
   Text,
@@ -13,6 +12,7 @@ import {
 } from 'react-native';
 import { WebView } from 'react-native-webview';
 import { Asset } from 'expo-asset';
+import * as WebBrowser from 'expo-web-browser';
 import * as ScreenOrientation from 'expo-screen-orientation';
 import { File, Paths } from 'expo-file-system';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -236,9 +236,19 @@ function Shell() {
                 // requested by the module on the first call)
                 AniBrowserNode.notify(String(msg.title ?? ''), String(msg.body ?? ''));
               } else if (msg.type === 'openExternal') {
-                // cloud sign-in: the Google OAuth page (and its loopback
-                // callback) must run in the device's browser, not this WebView
-                Linking.openURL(String(msg.url ?? '')).catch(() => {});
+                // cloud sign-in: Google OAuth (and its loopback callback) must
+                // run outside this WebView — Google rejects OAuth in embedded
+                // WebViews, so use a Custom Tab: an in-app browser surface
+                // with the app's own toolbar, no app switch to Chrome proper
+                WebBrowser.openBrowserAsync(String(msg.url ?? ''))
+                  .catch(() => {})
+                  .then(() => {
+                    // the tab was dismissed (sign-in done or abandoned) —
+                    // refresh the app's sync state without waiting for the poll
+                    webRef.current?.injectJavaScript(
+                      'if (typeof pollSync === "function") pollSync(); true;'
+                    );
+                  });
               }
             } catch {
               // non-JSON bridge message — ignore
