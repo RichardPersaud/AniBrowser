@@ -72,15 +72,59 @@ function prefs() {
   try { return JSON.parse(localStorage.getItem(PREFS_KEY) || '{}'); }
   catch { return {}; }
 }
+// profile-page overrides (username / avatar / bg color / hide-email). They live
+// inside prefs so they ride the normal prefs sync — the avatar is a resized
+// data-URL, small enough for the synced blob. Empty object = untouched identity.
+function profileEdit() {
+  const p = prefs().profile;
+  return p && typeof p === 'object' ? p : {};
+}
 function setPrefs(p) {
   localStorage.setItem(PREFS_KEY, JSON.stringify(p));
   localStorage.setItem(PREFS_TS_KEY, String(Date.now())); // prefs sync as one blob — stamp edits
   scheduleBackup();
 }
+// the audio track new playback should open with: the user's chosen default
+// (settings) wins; lastType only remembers a hot-swap, never the other way
+function prefAudioType() {
+  return prefs().defaultType || prefs().lastType || 'sub';
+}
 // 18+ shows carry an r18 flag from the source's card markup; the settings
-// toggle (default: hide) filters them out of Home, Search and Browse
+// toggle (default: hide) filters them out of Home, Search and Browse.
+// The source tick-marks ONLY its adult-catalog titles though — shows merely
+// rated R / R+ / Rx look like regular cards. Their rating lives on the detail
+// page, so the Hide filter also consults ratings learned by sweepAdultRatings.
+const ADULT_RATINGS = ['R', 'R+', 'Rx'];
+const adultRatings = {};          // slug -> pgRating ('R', 'R+', 'Rx', 'PG-13'…)
+const pendingRatings = new Set(); // slugs with a sweep request in flight
 function r18Visible(r) {
-  return !!prefs().showR18 || !r.r18;
+  if (prefs().showR18) return true;
+  if (r.r18) return false;
+  return !ADULT_RATINGS.includes(adultRatings[r.slug]);
+}
+
+// post-render sweep: fetch content ratings for every card in `container` the
+// UI doesn't know yet, then hide the ones that turn out R / R+ / Rx in place
+// (no re-render — the grid keeps its layout). Ratings come from the detail
+// pages, server-cached for a week, so repeats are instant.
+async function sweepAdultRatings(container) {
+  if (prefs().showR18 || !container) return;
+  const slugs = [...new Set(
+    [...container.querySelectorAll('[data-slug]')]
+      .map((c) => c.dataset.slug)
+      .filter((s) => s && !(s in adultRatings) && !pendingRatings.has(s))
+  )];
+  if (!slugs.length) return;
+  slugs.forEach((s) => pendingRatings.add(s));
+  try {
+    const { ratings } = await api('/api/ratings', { slugs });
+    Object.assign(adultRatings, ratings || {});
+  } catch { return; } // best-effort — untick'd cards just stay visible
+  finally { slugs.forEach((s) => pendingRatings.delete(s)); }
+  for (const slug of slugs) {
+    if (!ADULT_RATINGS.includes(adultRatings[slug])) continue;
+    container.querySelectorAll(`[data-slug="${slug}"]`).forEach((c) => { c.hidden = true; });
+  }
 }
 
 /* ---------------- favorites ---------------- */
@@ -152,16 +196,28 @@ async function restoreFromBackup() {
       setPrefsSilent({ ...prefs(), ...(data.prefs || {}) });
       if ((data.prefsTs || 0) > prefsTs()) localStorage.setItem(PREFS_TS_KEY, String(data.prefsTs));
       // favorites & history: union, newer entry wins per show (the server has
-      // already merged the cloud into the file — this is file vs localStorage)
+      // already merged the cloud into the file — this is file vs localStorage).
+      // A tombstone newer than an entry keeps it deleted, locally and in the
+      // file — otherwise the very restore below resurrects removals.
       const fb = (data.tombstones || {}).favorites || {};
       const pb = (data.tombstones || {}).progress || {};
       const mergedFavs = mergeDictNewerWins(data.favorites || {}, getFavs());
       const mergedProg = mergeDictNewerWins(data.progress || {}, getJSON());
+      const tombsF = { ...fb, ...getTombstones().favorites };
+      const tombsP = { ...pb, ...getTombstones().progress };
+      for (const k of Object.keys(mergedFavs)) {
+        if ((tombsF[k] || 0) > (mergedFavs[k].ts || 0)) delete mergedFavs[k];
+        else delete tombsF[k]; // entry survived its tombstone — stop tracking it
+      }
+      for (const k of Object.keys(mergedProg)) {
+        if ((tombsP[k] || 0) > (mergedProg[k].ts || 0)) delete mergedProg[k];
+        else delete tombsP[k];
+      }
       setFavsSilent(mergedFavs);
       setJSONSilent(mergedProg);
       localStorage.setItem(TOMBSTONES_KEY, JSON.stringify({
-        favorites: { ...fb, ...getTombstones().favorites },
-        progress: { ...pb, ...getTombstones().progress },
+        favorites: tombsF,
+        progress: tombsP,
       }));
     }
   } catch { /* backup is best-effort */ }
@@ -251,7 +307,7 @@ function renderWatching() {
     card.addEventListener('click', () => {
       openDetail(it.slug, it.title, it.poster, () => {
         state.epNum = it.epNum;
-        startPlayback(it.epNum, prefs().lastType || 'sub');
+        startPlayback(it.epNum, prefAudioType());
       });
     });
     attachFavBtn(card, it);
@@ -444,17 +500,26 @@ function toast(msg, isErr = false) {
 }
 
 function showView(name) {
-  for (const v of ['homeView', 'browseView', 'detailView', 'playerView', 'collectionView', 'profileView', 'settingsView']) {
+  for (const v of ['homeView', 'browseView', 'detailView', 'playerView', 'collectionView', 'profileView', 'settingsView', 'feedbackView']) {
     $(v).hidden = v !== name;
   }
   state.view = name;
-  // the profile page swaps the navbar for a round back + settings pair, and
-  // the settings page for a lone round back; everywhere else the standard
-  // navbar shows. The back button appears once there's a trail to unwind
-  // (topNav always leaves one when leaving a view).
-  const bare = name === 'profileView' || name === 'settingsView';
+  // the profile page swaps the navbar for a round back + settings pair, the
+  // settings page for a round back + feedback bubble, the feedback board for
+  // a lone round back; everywhere else the standard navbar shows. The back
+  // button appears once there's a trail to unwind (topNav always leaves one
+  // when leaving a view).
+  const bare = name === 'profileView' || name === 'settingsView' || name === 'feedbackView';
   document.body.classList.toggle('on-profile', name === 'profileView');
   document.body.classList.toggle('on-settings', name === 'settingsView');
+  document.body.classList.toggle('on-feedback', name === 'feedbackView');
+  // sidebar highlight follows the view — Home/Browse are the only items that
+  // map to a view; profile/settings/feedback pages highlight neither
+  document.querySelectorAll('.side-item[data-nav]').forEach((b) => {
+    b.classList.toggle('active',
+      (name === 'homeView' && b.dataset.nav === 'home') ||
+      (name === 'browseView' && b.dataset.nav === 'browse'));
+  });
   $('backBtn').hidden = !bare || histStack.length === 0;
   $('main').scrollTop = 0;
 }
@@ -492,6 +557,7 @@ function restoreView(v) {
   else if (v === 'profileView') { renderProfile(); showView('profileView'); }
   else if (v === 'detailView') showView('detailView');
   else if (v === 'settingsView' || v === 'collectionView') showView(v);
+  else if (v === 'feedbackView') showView('feedbackView');
   else if (v === 'playerView') { stopPlayback(); showView('detailView'); renderEpisodes(); }
   else {
     // home: keep any active search results on screen, else the home sections
@@ -831,6 +897,7 @@ async function loadBrowse() {
     const shown = results.filter(r18Visible);
     if (!shown.length) renderGridEmpty(grid, 'Nothing to show here');
     else for (const r of shown) grid.appendChild(makeCard(r));
+    sweepAdultRatings(grid);
     $('browsePageLabel').textContent = totalPages > 1
       ? `Page ${page} of ${totalPages}`
       : 'Page 1';
@@ -991,19 +1058,24 @@ async function topNav(target) {
   // you're already on (that would just stack a no-op "back to same place")
   const targetView = target === 'home' ? 'homeView'
     : target === 'browse' ? 'browseView'
-    : target === 'settings' ? 'settingsView' : 'profileView';
+    : target === 'settings' ? 'settingsView'
+    : target === 'feedback' ? 'feedbackView' : 'profileView';
   const fromView = state.view; // capture now — state.view moves on
   if (fromView !== targetView) pushHist(() => restoreView(fromView));
   if (target === 'home') navHome();
   else if (target === 'browse') {
     showView('browseView');
     loadBrowse(); // loadBrowse exits results mode — the full catalog shows
+  } else if (target === 'feedback') {
+    showView('feedbackView');
+    loadFeedback();
   } else if (target === 'profile') {
     renderProfile(); // fills from the last known status before the fetch lands
     pollSync(); // fresh status the moment the page opens
     showView('profileView');
   } else if (target === 'settings') {
     showView('settingsView');
+    syncSettingsToggles.forEach((f) => f()); // toggles mirror the current prefs
     pollSync(); pollUpdate(); // sync + update rows refresh the moment the page opens
   } else {
     renderProfile(); // fills from the last known status before the fetch lands
@@ -1070,6 +1142,7 @@ async function loadResults(append) {
     if (!append) $('resultsGrid').innerHTML = '';
     const shown = results.filter(r18Visible);
     for (const r of shown) $('resultsGrid').appendChild(makeCard(r));
+    sweepAdultRatings($('resultsGrid'));
     $('moreBtn').hidden = results.length === 0;
     if (!append && !shown.length) {
       $('resultsTitle').textContent = 'No results found';
@@ -1117,6 +1190,7 @@ function renderSkeletonEps(grid, count) {
 
 function makeCard(r) {
   const card = el('div', 'card');
+  card.dataset.slug = r.slug; // sweepAdultRatings finds/hides cards by slug
   card.title = r.title; // native tooltip shows the full name over the clamped title
   const media = el('div', 'card-media'); // anchors the date badge to the art, not the title
   const img = el('img');
@@ -1149,6 +1223,7 @@ async function loadRecent() {
     const shown = results.filter(r18Visible).slice(0, 30);
     if (!shown.length) renderGridEmpty(grid, 'Nothing to show right now');
     else for (const r of shown) grid.appendChild(makeCard(r));
+    sweepAdultRatings(grid);
     state.recentLoaded = true;
   } catch {
     section.hidden = true; // best-effort: hide rather than break the home view
@@ -1212,6 +1287,7 @@ function renderUpcomingSection() {
   const btn = $('upAll');
   btn.hidden = all.length <= 12;
   btn.onclick = () => openCollection({ kind: 'list', items: all, title: 'Coming soon' });
+  sweepAdultRatings(wrap);
   section.hidden = false;
 }
 
@@ -1240,12 +1316,14 @@ function renderUpcomingMarquee() {
       meta.appendChild(el('span', 'up-date', r.date || 'Coming soon'));
       b.appendChild(meta);
       b.title = r.title;
+      b.dataset.slug = r.slug; // sweepAdultRatings finds/hides cards by slug
       b.addEventListener('click', () => openDetail(r.slug, r.title, r.poster));
       track.appendChild(b);
     }
   };
   build();
   build();
+  sweepAdultRatings(track); // covers both copies of the seamless loop
   wrap.hidden = false;
 }
 
@@ -1284,7 +1362,7 @@ function renderContinue() {
     card.addEventListener('click', () => {
       openDetail(it.slug, it.title, it.poster, () => {
         state.epNum = it.epNum;
-        startPlayback(it.epNum, prefs().lastType || 'sub');
+        startPlayback(it.epNum, prefAudioType());
       });
     });
     attachFavBtn(card, it);
@@ -1445,11 +1523,27 @@ async function loadDetailInfo() {
   try {
     const d = await api(`/api/detail?slug=${encodeURIComponent(slug)}`);
     if (state.slug === slug) {
+      applyAudioAvail(d);
       renderDetailInfo(d);
       renderRelated(d);
       renderRecommendations(d);
     }
   } catch { /* details are best-effort */ }
+}
+
+/* ---- audio availability ----
+   The detail page tags SUB/DUB episode counts; a count of 0 means the show has
+   no episodes in that track. Drop the missing half of the SUB/DUB toggles and
+   pin state.type to a track that exists (syncSwapToggle applies both toggles). */
+function applyAudioAvail(d) {
+  state.audioAvail = {
+    sub: d.subCount !== '0',
+    dub: d.dubCount !== '0',
+  };
+  if (!state.audioAvail[state.type]) {
+    state.type = state.audioAvail.sub ? 'sub' : 'dub';
+  }
+  syncSwapToggle();
 }
 
 /* ---- seasons & movies (the source's "Related Anime" block) ---- */
@@ -1465,6 +1559,7 @@ function renderRelated(d) {
   const slider = $('relSlider');
   slider.innerHTML = '';
   for (const r of items) slider.appendChild(makeCard(r));
+  sweepAdultRatings(slider);
   section.hidden = false;
 }
 
@@ -1487,6 +1582,7 @@ async function openCollection(opts) {
     const items = opts.items.filter(r18Visible);
     if (!items.length) renderGridEmpty(grid, 'Nothing to show here');
     else for (const r of items) grid.appendChild(makeCard(r));
+    sweepAdultRatings(grid);
     $('collectionPager').hidden = true;
     showView('collectionView');
   } else {
@@ -1513,6 +1609,7 @@ async function loadCollection() {
     const shown = results.filter(r18Visible);
     if (!shown.length) renderGridEmpty(grid, 'Nothing to show here');
     else for (const r of shown) grid.appendChild(makeCard(r));
+    sweepAdultRatings(grid);
     $('collectionTitle').textContent = `${collection.title} anime`;
     $('colPageLabel').textContent = totalPages > 1 ? `Page ${page} of ${totalPages}` : '';
     $('colPrev').disabled = page <= 1;
@@ -1592,6 +1689,7 @@ async function renderRecommendations(d) {
   const grid = $('recGrid');
   grid.innerHTML = '';
   for (const r of picked) grid.appendChild(makeCard(r));
+  sweepAdultRatings(grid);
   section.hidden = false;
 }
 
@@ -1620,10 +1718,9 @@ async function openDetail(slug, title, poster, onReady) {
   state.title = title;
   state.poster = poster;
   state.epNum = null;
-  state.type = prefs().defaultType || prefs().lastType || 'sub';
-  for (const b of document.querySelectorAll('#typeToggle button')) {
-    b.classList.toggle('active', b.dataset.type === state.type);
-  }
+  state.audioAvail = null; // unknown until the detail page loads (applyAudioAvail)
+  state.type = prefAudioType();
+  syncSwapToggle();
   $('detailTitle').textContent = title;
   $('detailTitle').title = title; // desktop hover shows a long clamped title in full
   $('detailPoster').src = poster || '';
@@ -1658,10 +1755,9 @@ async function openDetail(slug, title, poster, onReady) {
 
 document.querySelectorAll('#typeToggle button').forEach((b) => {
   b.addEventListener('click', () => {
+    if (b.hidden) return; // track the show doesn't have (hidden by applyAudioAvail)
     state.type = b.dataset.type;
-    document.querySelectorAll('#typeToggle button').forEach((x) =>
-      x.classList.toggle('active', x === b)
-    );
+    syncSwapToggle();
     const p = prefs(); p.lastType = state.type; setPrefs(p);
     renderEpisodes();
   });
@@ -1708,6 +1804,12 @@ function stopPlayback() {
   video.load();
   clearInterval(state.progressTimer);
   clearInterval(state.introTimer);
+  clearInterval(state.watchTimer);
+  state.watchPersistNow = true;
+  persistWatch();
+  state.watchUsed = null; // ends the session — badge hides until the next episode
+  $('watchBadge').hidden = true;
+  $('watchUpOverlay').hidden = true;
   for (const t of [...video.querySelectorAll('track')]) t.remove();
 }
 
@@ -1791,13 +1893,18 @@ async function startPlayback(epNum, type, opts = {}) {
     );
   } catch (e) {
     if (state.playId !== playId) return;
-    // auto-fallback to the other audio type
+    // auto-fallback to the other audio type; adopt fb as the requested type so
+    // the post-resolve audioType check below doesn't toast about it a second time
     const fb = e.fallbackType || (type === 'sub' ? 'dub' : 'sub');
     try {
       src = await api(
         `/api/sources?slug=${encodeURIComponent(state.slug)}&ep=${encodeURIComponent(epNum)}&type=${fb}`
       );
-      toast(`No ${type} source — playing ${fb.toUpperCase()} instead`);
+      toast(`No ${type.toUpperCase()} source — playing ${fb.toUpperCase()} instead`);
+      type = fb;
+      state.type = fb;
+      syncSwapToggle(); // toggle + ep label now show the track actually playing
+      $('playerEp').textContent = `EP ${epNum} (${fb.toUpperCase()})`;
     } catch (e2) {
       if (state.playId !== playId) return;
       clearInterval(tick);
@@ -1812,6 +1919,15 @@ async function startPlayback(epNum, type, opts = {}) {
   clearInterval(tick);
   if (state.playId !== playId) return;
   state.sources = src;
+  // the scraper silently resolved the other track when the requested one has
+  // no embeds for this episode — say so, and make the toggle + label reflect
+  // the audio actually playing
+  if (src.audioType && src.audioType !== type) {
+    state.type = src.audioType;
+    syncSwapToggle();
+    $('playerEp').textContent = `EP ${epNum} (${src.audioType.toUpperCase()})`;
+    toast(`No ${type.toUpperCase()} source for this episode — playing ${src.audioType.toUpperCase()}`);
+  }
   $('providerLabel').textContent = `via ${src.provider || 'hianime'}`;
   $('playerLoading').hidden = true;
 
@@ -1900,10 +2016,17 @@ function setupWatchers(src) {
   const video = $('video');
   clearInterval(state.progressTimer);
   clearInterval(state.introTimer);
+  clearInterval(state.watchTimer);
 
   state.progressTimer = setInterval(() => {
     if (!video.paused) saveProgress();
   }, 5000);
+
+  // daily watch budget: snapshot today's remaining time, then tick per second
+  state.watchUsed = storedWatchUsed();
+  state.watchDate = todayKey();
+  state.watchTimer = setInterval(watchTick, 1000);
+  updateWatchBadge();
   video.addEventListener('play', markWatched, { once: true });
   video.addEventListener('ended', () => {
     saveProgress(true);
@@ -1936,12 +2059,116 @@ $('playerCancelBtn').addEventListener('click', () => {
   renderEpisodes();
 });
 
+/* ---- daily watch-time limit ----
+   45 minutes of real playback per calendar day. Paused and buffering video
+   don't tick (readyState < 3 = still fetching data). The budget lives in
+   prefs so it survives restarts and syncs with the backup; the badge sits in
+   the bottom player bar — outside the video and pointer-transparent — and
+   the timeout popup is absolute inside #playerWrap, so fullscreen shows it. */
+const DAILY_LIMIT = 45 * 60; // seconds
+
+function todayKey() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+// the stored budget only counts for its own calendar day — a new day starts full
+function storedWatchUsed() {
+  const w = prefs().watchLimit;
+  return w && w.date === todayKey() ? (w.used || 0) : 0;
+}
+
+// ticks write locally only; real moments (pause / stop / reset / unload) also
+// schedule a backup so the synced blob doesn't churn every second
+function persistWatch() {
+  if (state.watchUsed == null) return;
+  const p = prefs();
+  p.watchLimit = { date: todayKey(), used: state.watchUsed };
+  if (state.watchPersistNow) {
+    state.watchPersistNow = false;
+    setPrefs(p);
+  } else {
+    setPrefsSilent(p);
+  }
+}
+
+function updateWatchBadge() {
+  const badge = $('watchBadge');
+  badge.hidden = state.watchUsed == null;
+  const rem = Math.max(0, DAILY_LIMIT - (state.watchUsed || 0));
+  $('watchTime').textContent = fmtTime(rem);
+  badge.classList.toggle('low', rem > 0 && rem < 5 * 60);
+}
+
+function showWatchUp() {
+  if (!$('watchUpOverlay').hidden) return;
+  $('watchUpOverlay').hidden = false;
+}
+
+function watchTick() {
+  const video = $('video');
+  // midnight rollover mid-session: a new day means a fresh budget
+  if (state.watchDate !== todayKey()) {
+    state.watchDate = todayKey();
+    state.watchUsed = 0;
+  }
+  // readyState < HAVE_FUTURE_DATA (3) = buffering/stalled — that time is free
+  if (!video.paused && !video.ended && video.readyState >= 3 && video.currentTime > 0) {
+    state.watchUsed += 1;
+    if (state.watchUsed % 15 === 0) persistWatch();
+    if (state.watchUsed >= DAILY_LIMIT) {
+      video.pause(); // the 'pause' handler below persists the spent budget
+      showWatchUp();
+    }
+  }
+  updateWatchBadge();
+}
+
+$('watchResetBtn').addEventListener('click', () => {
+  state.watchUsed = 0;
+  state.watchDate = todayKey();
+  state.watchPersistNow = true;
+  persistWatch();
+  $('watchUpOverlay').hidden = true;
+  updateWatchBadge();
+  toast('Timer reset — 45:00 of watch time back');
+  const video = $('video');
+  if (videoActive()) video.play().catch(() => {});
+});
+$('watchCloseBtn').addEventListener('click', () => {
+  $('watchUpOverlay').hidden = true;
+});
+
+// video lives for the whole app session, so these wire up once — not per episode
+$('video').addEventListener('pause', () => {
+  state.watchPersistNow = true;
+  persistWatch();
+});
+// pressing play with a spent budget just brings the popup back
+$('video').addEventListener('play', () => {
+  if (state.watchUsed != null && state.watchUsed >= DAILY_LIMIT) {
+    $('video').pause();
+    showWatchUp();
+  }
+});
+window.addEventListener('beforeunload', () => {
+  state.watchPersistNow = true;
+  persistWatch();
+});
+
 /* ---- sub/dub hot swap ----
    Re-resolves the current episode in the other audio track; saveProgress ran
    just before, so startPlayback resumes at the position we left. */
 function syncSwapToggle() {
-  document.querySelectorAll('#swapToggle button').forEach((x) =>
-    x.classList.toggle('active', x.dataset.type === state.type));
+  // both segmented toggles (detail view + player) mirror state.type; buttons
+  // for a track the show doesn't have are hidden, not just inactive
+  for (const sel of ['#typeToggle', '#swapToggle']) {
+    document.querySelectorAll(`${sel} button`).forEach((x) => {
+      const t = x.dataset.type;
+      x.classList.toggle('active', t === state.type);
+      x.hidden = !!(state.audioAvail && !state.audioAvail[t]);
+    });
+  }
 }
 document.querySelectorAll('#swapToggle button').forEach((b) => {
   b.addEventListener('click', () => {
@@ -1973,6 +2200,7 @@ if (prefs().autoNext) {
 // pages through topNav (player docking + history trail)
 $('accountBtn').addEventListener('click', () => topNav('profile'));
 $('profileGearBtn').addEventListener('click', () => topNav('settings'));
+$('feedbackNavBtn').addEventListener('click', () => topNav('feedback'));
 
 /* ---------------- cloud sync (Google via Supabase) ---------------- */
 
@@ -2153,16 +2381,135 @@ $('syncNowBtn').addEventListener('click', (e) => syncNowFlow(e.currentTarget));
 $('signOutBtn').addEventListener('click', (e) => signOutFlow(e.currentTarget));
 $('profileSignIn').addEventListener('click', (e) => startSignInFlow(e.currentTarget));
 $('loginBtn').addEventListener('click', (e) => startSignInFlow(e.currentTarget));
-$('profileSyncNow').addEventListener('click', (e) => syncNowFlow(e.currentTarget));
 $('profileSignOut').addEventListener('click', (e) => signOutFlow(e.currentTarget));
+
+/* ---- edit profile ----
+   Everything edits prefs.profile: name/avatar/bg color/hide-email. Saving goes
+   through setPrefs, so backup + cloud sync follow automatically; the navbar
+   avatar and profile card re-render from the same prefs. */
+const BG_SWATCHES = [
+  { v: '', label: 'Default' },
+  { v: '#243b55', label: 'Steel blue' },
+  { v: '#33245c', label: 'Violet' },
+  { v: '#0f3d2e', label: 'Forest' },
+  { v: '#5c2430', label: 'Wine' },
+  { v: '#4a3b19', label: 'Amber' },
+  { v: '#1d4a4a', label: 'Teal' },
+  { v: '#4a4a4a', label: 'Slate' },
+];
+let draftBg = '';    // swatch selection in the open editor ('' = theme default)
+let draftAvatar = null; // data-URL chosen in the open editor (null = identity photo)
+
+const swatchBox = $('editBgSwatches');
+BG_SWATCHES.forEach(({ v, label }) => {
+  const b = el('button');
+  b.type = 'button';
+  b.title = label;
+  b.style.background = v || 'var(--bg2)';
+  b.addEventListener('click', () => {
+    draftBg = v;
+    syncBgSwatches();
+  });
+  swatchBox.appendChild(b);
+});
+function syncBgSwatches() {
+  [...swatchBox.children].forEach((b, i) =>
+    b.classList.toggle('active', BG_SWATCHES[i].v === draftBg));
+}
+
+// editor preview: the draft photo wins, then the signed-in identity photo,
+// then the first letter of the (custom or Google) name
+function refreshEditorPreview() {
+  const s = lastSyncStatus || {};
+  const src = draftAvatar || (s.pictureLocal || s.picture) || null;
+  const img = $('editAvatarPreview');
+  const fallback = $('editAvatarFallback');
+  if (src) {
+    img.src = src;
+    img.hidden = false;
+    fallback.hidden = true;
+  } else {
+    img.hidden = true;
+    img.removeAttribute('src');
+    fallback.textContent = (profileEdit().name || s.name || s.email || '?').trim().charAt(0).toUpperCase();
+    fallback.hidden = false;
+  }
+  $('editAvatarReset').hidden = !draftAvatar;
+}
+
+function openProfileEditor() {
+  const p = profileEdit();
+  $('editName').value = p.name || '';
+  $('editHideEmail').checked = !!p.hideEmail;
+  draftBg = p.bg || '';
+  draftAvatar = p.avatar || null;
+  syncBgSwatches();
+  refreshEditorPreview();
+  $('profileEditor').hidden = false;
+  $('editName').focus();
+}
+$('editProfileBtn').addEventListener('click', openProfileEditor);
+$('editProfileCancel').addEventListener('click', () => { $('profileEditor').hidden = true; });
+
+$('editAvatarBtn').addEventListener('click', () => $('editAvatarInput').click());
+$('editAvatarReset').addEventListener('click', () => {
+  draftAvatar = null;
+  refreshEditorPreview();
+});
+
+// chosen image → centered-crop square, downscaled to a 256px JPEG data-URL so
+// the synced prefs blob stays small (~20-40KB instead of multi-MB raw files)
+$('editAvatarInput').addEventListener('change', () => {
+  const file = $('editAvatarInput').files[0];
+  $('editAvatarInput').value = '';
+  if (!file) return;
+  if (!file.type.startsWith('image/')) { toast('That file is not an image', true); return; }
+  if (file.size > 8 * 1024 * 1024) { toast('Image too large (max 8MB)', true); return; }
+  const img = new Image();
+  img.onload = () => {
+    try {
+      const side = Math.min(img.naturalWidth, img.naturalHeight);
+      const c = document.createElement('canvas');
+      c.width = c.height = 256;
+      c.getContext('2d').drawImage(
+        img,
+        (img.naturalWidth - side) / 2, (img.naturalHeight - side) / 2, side, side,
+        0, 0, 256, 256
+      );
+      draftAvatar = c.toDataURL('image/jpeg', 0.85);
+      refreshEditorPreview();
+    } catch {
+      toast('Could not read that image', true);
+    }
+  };
+  img.onerror = () => toast('Could not read that image', true);
+  img.src = URL.createObjectURL(file);
+});
+
+$('editProfileSave').addEventListener('click', () => {
+  const p = prefs();
+  p.profile = {
+    ...profileEdit(),
+    name: $('editName').value.trim() || null,
+    bg: draftBg || null,
+    hideEmail: $('editHideEmail').checked,
+    avatar: draftAvatar || null,
+  };
+  setPrefs(p); // schedules the backup write + cloud sync like every pref edit
+  $('profileEditor').hidden = true;
+  renderProfile(); // card (name/email/bg) re-renders from the new prefs
+  if (lastSyncStatus) renderSyncUI(lastSyncStatus); // navbar avatar too
+  toast('Profile updated');
+});
 
 /* profile page */
 
-/* the profile avatar mirrors the signed-in identity: the locally cached photo
-   (pictureLocal → /avatar) when we have it — it survives offline — falling
-   back to the remote Google URL, then a generic user glyph */
+/* the profile avatar mirrors the signed-in identity: a custom photo chosen in
+   "Edit profile" wins, then the locally cached Google photo (pictureLocal →
+   /avatar) when we have it — it survives offline — falling back to the remote
+   Google URL, then a generic user glyph */
 function avatarSrc(s) {
-  return (s && (s.pictureLocal || s.picture)) || null;
+  return profileEdit().avatar || (s && (s.pictureLocal || s.picture)) || null;
 }
 
 function renderProfile(s) {
@@ -2177,7 +2524,7 @@ function renderProfile(s) {
   } else if (signedIn) {
     avatar.hidden = true;
     avatar.removeAttribute('src');
-    fallback.textContent = (s.name || s.email || '?').trim().charAt(0).toUpperCase();
+    fallback.textContent = (profileEdit().name || s.name || s.email || '?').trim().charAt(0).toUpperCase();
     fallback.hidden = false;
   } else {
     avatar.hidden = true;
@@ -2185,9 +2532,12 @@ function renderProfile(s) {
     fallback.innerHTML = icon('user'); // generic glyph when signed out
     fallback.hidden = false;
   }
-  $('profileName').textContent = signedIn ? (s.name || s.email) : 'Not signed in';
-  $('profileEmail').textContent = signedIn && s.name ? s.email : '';
+  const prof = profileEdit();
+  $('profileName').textContent = signedIn ? (prof.name || s.name || s.email) : 'Not signed in';
+  $('profileEmail').textContent = signedIn && !prof.hideEmail && s.name ? s.email : '';
   $('profileVerified').hidden = !signedIn;
+  // the card's background color is a profile edit (null = theme default)
+  $('profileCard').style.background = prof.bg || '';
 
   $('statFavs').textContent = String(Object.keys(getFavs()).length);
   $('statWatched').textContent = String(Object.keys(getJSON()).length);
@@ -2207,7 +2557,7 @@ function renderProfile(s) {
     detail.textContent = s.lastError ? `Last attempt failed — ${s.lastError}` : 'Sign in to keep everything in sync across your devices.';
   }
   $('profileSignIn').hidden = !s || !s.configured || signedIn;
-  $('profileSyncNow').hidden = !signedIn;
+  $('editProfileBtn').hidden = !signedIn;
   $('profileSignOut').hidden = !signedIn;
   renderFavorites(); // the favorites list lives on this page — keep it current
   if (!$('paneWatch').hidden) renderWatching();
@@ -2222,24 +2572,40 @@ defQualitySel.addEventListener('change', () => {
   toast(`Default quality: ${defQualitySel.value === 'auto' ? 'Auto' : defQualitySel.value + 'p'}`);
 });
 
-const defTypeSel = $('defTypeSel');
-defTypeSel.value = prefs().defaultType || 'sub';
-defTypeSel.addEventListener('change', () => {
+/* settings as segmented toggles — click a side and it commits immediately.
+   The active side always mirrors the live pref: the returned sync function is
+   re-run every time the settings page opens (prefs can arrive via cloud sync). */
+const syncSettingsToggles = [];
+function settingsToggle(id, get, onChange) {
+  const box = $(id);
+  const sync = () => box.querySelectorAll('button').forEach((b) =>
+    b.classList.toggle('active', b.dataset.value === get()));
+  box.querySelectorAll('button').forEach((b) =>
+    b.addEventListener('click', () => {
+      if (b.classList.contains('active')) return;
+      onChange(b.dataset.value);
+      sync();
+    }));
+  sync();
+  syncSettingsToggles.push(sync);
+}
+
+settingsToggle('defTypeToggle', () => prefs().defaultType || 'sub', (v) => {
   const p = prefs();
-  p.defaultType = defTypeSel.value;
-  p.lastType = defTypeSel.value;
+  p.defaultType = v;
+  p.lastType = v;
   setPrefs(p);
-  state.type = defTypeSel.value;
-  toast(`Default audio: ${defTypeSel.value.toUpperCase()}`);
+  state.type = v;
+  syncSwapToggle(); // the detail + player toggles mirror the new default too
+  toast(`Default audio: ${v.toUpperCase()}`);
 });
 
-r18Sel.addEventListener('change', () => {
+settingsToggle('r18Toggle', () => (prefs().showR18 ? 'show' : 'hide'), (v) => {
   const p = prefs();
-  p.showR18 = r18Sel.value === 'show';
+  p.showR18 = v === 'show';
   setPrefs(p);
   rebuildRatingFilter(); // R+/Rx options exist only while 18+ is shown
-  const hidden = p.showR18 ? 'now shown' : 'now hidden';
-  toast(`18+ content ${hidden} — refreshing this view`);
+  toast(`18+ content ${p.showR18 ? 'now shown' : 'now hidden'} — refreshing this view`);
   // re-apply to whatever is on screen right now
   if (state.view === 'browseView') loadBrowse();
   else if (state.view === 'profileView') { /* favorites keep showing what you saved */ }
@@ -2251,11 +2617,9 @@ r18Sel.addEventListener('change', () => {
   renderUpcoming(); // the Coming soon section + marquee re-filter too
 });
 
-const pushNotifSel = $('pushNotifSel');
-pushNotifSel.value = prefs().pushNotifs === false ? 'off' : 'on';
-pushNotifSel.addEventListener('change', () => {
+settingsToggle('pushNotifToggle', () => (prefs().pushNotifs === false ? 'off' : 'on'), (v) => {
   const p = prefs();
-  p.pushNotifs = pushNotifSel.value === 'on';
+  p.pushNotifs = v === 'on';
   setPrefs(p);
   toast(p.pushNotifs ? 'Favorite update alerts on' : 'Favorite update alerts off');
 });
@@ -2483,6 +2847,119 @@ $('synopsisToggle').addEventListener('click', () => {
 // a resize changes how many lines the synopsis needs — re-decide the toggle
 window.addEventListener('resize', () => {
   if (!$('detailView').hidden) syncSynopsisToggle();
+});
+
+/* ---------------- feedback board ---------------- */
+
+// requires sign-in: votes and posts are attributed to the Google account
+// (the login gate guarantees one), one vote per user per item, changeable.
+let feedbackItems = null; // the raw list from the server
+let feedbackSort = 'top';
+
+function relDate(iso) {
+  const s = (Date.now() - new Date(iso).getTime()) / 1000;
+  if (s < 60) return 'just now';
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  if (s < 86400 * 30) return `${Math.floor(s / 86400)}d ago`;
+  return new Date(iso).toLocaleDateString();
+}
+
+function sortFeedback(items) {
+  return items.slice().sort((a, b) => feedbackSort === 'top'
+    ? (b.score - a.score) || (new Date(b.createdAt) - new Date(a.createdAt))
+    : (new Date(b.createdAt) - new Date(a.createdAt)));
+}
+
+function renderFeedback() {
+  const list = $('feedbackList');
+  list.innerHTML = '';
+  const items = sortFeedback(feedbackItems || []);
+  $('feedbackEmpty').hidden = items.length > 0;
+  document.querySelectorAll('#feedbackSort .sort-btn').forEach((b) => {
+    b.classList.toggle('active', b.dataset.sort === feedbackSort);
+  });
+  for (const item of items) {
+    const card = el('div', 'fb-card');
+    const votes = el('div', 'fb-votes');
+    const up = el('button', 'fb-vote' + (item.myVote === 1 ? ' on-up' : ''));
+    up.title = 'Upvote — you want this dealt with';
+    up.innerHTML = '<svg class="icon"><use href="#i-chev-up"></use></svg>';
+    up.addEventListener('click', () => voteFeedback(item, item.myVote === 1 ? 0 : 1));
+    const score = el('div', 'fb-score', String(item.score));
+    const down = el('button', 'fb-vote' + (item.myVote === -1 ? ' on-down' : ''));
+    down.innerHTML = '<svg class="icon"><use href="#i-chev-down"></use></svg>';
+    down.addEventListener('click', () => voteFeedback(item, item.myVote === -1 ? 0 : -1));
+    votes.append(up, score, down);
+    const content = el('div', 'fb-content');
+    content.appendChild(el('div', 'fb-title', item.title));
+    content.appendChild(el('div', 'fb-body', item.body));
+    content.appendChild(el('div', 'fb-meta',
+      `${item.author}${item.mine ? ' (you)' : ''} · ${relDate(item.createdAt)}`));
+    card.append(votes, content);
+    list.appendChild(card);
+  }
+}
+
+async function loadFeedback() {
+  const list = $('feedbackList');
+  list.innerHTML = '';
+  list.appendChild(el('p', 'hint', 'Loading…'));
+  try {
+    const { items } = await api('/api/feedback');
+    feedbackItems = items;
+    $('feedbackComposer').hidden = true;
+    renderFeedback();
+  } catch (e) {
+    list.innerHTML = '';
+    $('feedbackEmpty').hidden = true;
+    list.appendChild(el('p', 'hint', 'Could not load feedback: ' + e.message));
+  }
+}
+
+// optimistic flip, then re-fetch — the server is the source of truth on score
+async function voteFeedback(item, value) {
+  const prev = item.myVote;
+  try {
+    await api('/api/feedback/vote', { id: item.id, value });
+    item.myVote = value;
+    item.score += value - prev;
+    renderFeedback();
+    loadFeedback(); // silent refresh — the row's true score replaces the guess
+  } catch (e) {
+    toast('Vote failed: ' + e.message, true);
+  }
+}
+
+$('newFeedbackBtn').addEventListener('click', () => {
+  const f = $('feedbackComposer');
+  f.hidden = false;
+  $('feedbackTitle').value = '';
+  $('feedbackBody').value = '';
+  $('feedbackTitle').focus();
+});
+$('feedbackCancelBtn').addEventListener('click', () => { $('feedbackComposer').hidden = true; });
+$('feedbackComposer').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const title = $('feedbackTitle').value.trim();
+  const body = $('feedbackBody').value.trim();
+  if (!title || !body) { toast('Add a title and a description first', true); return; }
+  const btn = $('feedbackSubmitBtn');
+  btn.disabled = true;
+  try {
+    const { item } = await api('/api/feedback', { title, body });
+    if (feedbackItems) feedbackItems.unshift(item);
+    $('feedbackComposer').hidden = true;
+    renderFeedback();
+    toast('Feedback posted');
+  } catch (err) {
+    toast('Could not post: ' + err.message, true);
+  } finally {
+    btn.disabled = false;
+  }
+});
+document.querySelectorAll('#feedbackSort .sort-btn').forEach((b) => {
+  b.addEventListener('click', () => { feedbackSort = b.dataset.sort; renderFeedback(); });
 });
 
 /* ---------------- init ---------------- */

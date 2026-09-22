@@ -17,6 +17,7 @@
     <symbol id="i-bell" viewBox="0 0 24 24"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></symbol>
     <symbol id="i-maximize" viewBox="0 0 24 24"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></symbol>
     <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></symbol>
     <symbol id="i-play" viewBox="0 0 24 24"><polygon points="6 3 20 12 6 21 6 3"/></symbol>
     <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></symbol>
     <symbol id="i-chev-left" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></symbol>
@@ -26,6 +27,9 @@
     <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></symbol>
     <symbol id="i-filter" viewBox="0 0 24 24"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></symbol>
     <symbol id="i-check" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></symbol>
+    <symbol id="i-feedback" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></symbol>
+    <symbol id="i-chev-up" viewBox="0 0 24 24"><polyline points="18 15 12 9 6 15"/></symbol>
+    <symbol id="i-chev-down" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></symbol>
   </svg>
   <div id="bootSplash">
     <img class="boot-logo" src="logo-t.png" alt="">
@@ -46,6 +50,8 @@
   <header id="topbar">
     <button id="backBtn" class="round-btn" title="Back" data-back="back" hidden><svg class="icon"><use href="#i-chev-left"></use></svg></button>
     <button id="profileGearBtn" class="round-btn" title="Settings"><svg class="icon"><use href="#i-gear"></use></svg></button>
+    <!-- feedback board — reachable only from the settings page's navbar -->
+    <button id="feedbackNavBtn" class="round-btn" title="Feedback board"><svg class="icon"><use href="#i-feedback"></use></svg></button>
     <button id="sidebarBtn" title="Toggle sidebar"><svg class="icon"><use href="#i-menu"></use></svg></button>
     <div id="brand"><img src="logo-nav.png" alt="AniNinja"></div>
     <form id="searchForm" autocomplete="off">
@@ -188,11 +194,38 @@
           <div id="profileEmail" class="hint"></div>
           <div id="profileFollowLine"><b id="statFavs">0</b> favorites&nbsp;&middot;&nbsp;<b id="statWatched">0</b> watching</div>
           <div id="profileActions">
+            <button id="editProfileBtn" class="pill-btn" hidden><svg class="icon"><use href="#i-gear"></use></svg> Edit profile</button>
             <button id="profileSignIn" class="pill-btn pill-accent" hidden><svg class="icon"><use href="#i-user"></use></svg> Sign in with Google</button>
-            <button id="profileSyncNow" class="pill-btn pill-accent" hidden><svg class="icon"><use href="#i-refresh"></use></svg> Sync now</button>
             <button id="profileSignOut" class="pill-btn" hidden>Sign out</button>
           </div>
           <p class="hint" id="profileSyncDetail"></p>
+          <!-- EDIT PROFILE — inline panel. Everything lands in prefs.profile and
+               rides the existing prefs sync (the avatar is stored as a resized
+               data-URL), so no server round-trip is involved. -->
+          <div id="profileEditor" hidden>
+            <div class="editAvatarRow">
+              <span class="editAvatarBox">
+                <img id="editAvatarPreview" alt="" hidden>
+                <span id="editAvatarFallback" hidden></span>
+              </span>
+              <div class="editAvatarBtns">
+                <button id="editAvatarBtn" class="pill-btn" type="button">Choose image…</button>
+                <button id="editAvatarReset" class="pill-btn" type="button" hidden>Use Google photo</button>
+                <input id="editAvatarInput" type="file" accept="image/*" hidden>
+              </div>
+            </div>
+            <label class="setting-row">Username
+              <input id="editName" type="text" maxlength="40" placeholder="Your display name" autocomplete="off">
+            </label>
+            <label class="setting-row">Background color
+              <div id="editBgSwatches" class="swatch-row"></div>
+            </label>
+            <label class="editCheckRow"><input id="editHideEmail" type="checkbox"> Hide my email</label>
+            <div class="editActions">
+              <button id="editProfileSave" class="pill-btn pill-accent" type="button">Save</button>
+              <button id="editProfileCancel" class="pill-btn" type="button">Cancel</button>
+            </div>
+          </div>
           <p class="hint">Favorites, history and settings live on this device and mirror to your account whenever you're online — the app works fully offline either way.</p>
         </div>
         <!-- favorites + watching live on the profile page (the sidebar has no favorites tab) -->
@@ -221,9 +254,8 @@
       </section>
 
       <!-- SETTINGS — opened from the profile page's round gear; the navbar here
-           is just the round back button -->
+           is just the round back button plus the feedback bubble -->
       <section id="settingsView" hidden>
-        <h2>Settings</h2>
         <div id="settingsCard">
           <label class="setting-row">Default video quality
             <select id="defQualitySel">
@@ -235,23 +267,23 @@
             </select>
           </label>
           <label class="setting-row">Default audio track
-            <select id="defTypeSel">
-              <option value="sub">SUB (original + subs)</option>
-              <option value="dub">DUB</option>
-            </select>
+            <div id="defTypeToggle" class="segmented">
+              <button data-value="sub" class="active">SUB (original + subs)</button>
+              <button data-value="dub">DUB</button>
+            </div>
           </label>
           <label class="setting-row">R-rated content (18+)
-            <select id="r18Sel">
-              <option value="hide">Hide</option>
-              <option value="show">Show</option>
-            </select>
+            <div id="r18Toggle" class="segmented">
+              <button data-value="hide" class="active">Hide</button>
+              <button data-value="show">Show</button>
+            </div>
           </label>
-          <p class="hint">Applied to new episodes you play. "Hide" removes 18+ titles from Home, Search and Browse.</p>
+          <p class="hint">Applied to new episodes you play. "Hide" removes titles rated 18+, R, R+ or Rx from Home, Search and Browse (rated titles are looked up from the source's detail pages, so they fade out shortly after a page loads).</p>
           <label class="setting-row">Favorite update alerts
-            <select id="pushNotifSel">
-              <option value="on">On — system notifications</option>
-              <option value="off">Off</option>
-            </select>
+            <div id="pushNotifToggle" class="segmented">
+              <button data-value="on" class="active">On</button>
+              <button data-value="off">Off</button>
+            </div>
           </label>
           <p class="hint">A toast (plus a system notification on Android) when a favorite gets new episodes.</p>
           <hr class="setting-sep">
@@ -278,6 +310,29 @@
           <hr class="setting-sep">
           <p class="hint" id="appVersion">AniNinja</p>
         </div>
+      </section>
+
+      <!-- FEEDBACK BOARD — opened from the round bubble on the settings page's
+           navbar; lists feedback from all users, upvotable/downvotable -->
+      <section id="feedbackView" hidden>
+        <div id="feedbackHead">
+          <h2>Feedback</h2>
+          <div id="feedbackSort">
+            <button class="pill-btn sort-btn" data-sort="top">Top</button>
+            <button class="pill-btn sort-btn" data-sort="new">Newest</button>
+          </div>
+          <button id="newFeedbackBtn" class="pill-btn pill-accent">＋ New feedback</button>
+        </div>
+        <form id="feedbackComposer" hidden>
+          <input id="feedbackTitle" maxlength="120" placeholder="Title — a one-line summary" spellcheck="false">
+          <textarea id="feedbackBody" rows="5" maxlength="2000" placeholder="Describe it — what happened, what you expected…"></textarea>
+          <div id="feedbackComposerActions">
+            <button type="button" id="feedbackCancelBtn" class="pill-btn">Cancel</button>
+            <button type="submit" id="feedbackSubmitBtn" class="pill-btn pill-accent">Post</button>
+          </div>
+        </form>
+        <div id="feedbackList"></div>
+        <p id="feedbackEmpty" class="hint" hidden>No feedback yet — be the first to post.</p>
       </section>
 
       <!-- DETAIL -->
@@ -365,6 +420,23 @@
         </div>
         <div id="playerBottom">
           <span id="providerLabel"></span>
+          <!-- daily watch-time budget: lives in the bottom bar — outside the
+               video, pointer-transparent, visible in fullscreen -->
+          <span id="watchBadge" hidden title="Daily watch time remaining">
+            <svg class="icon"><use href="#i-clock"></use></svg><span id="watchTime">45:00</span>
+          </span>
+        </div>
+        <!-- daily watch-time timeout: absolute inside #playerWrap so it also
+             shows while the player is in fullscreen -->
+        <div id="watchUpOverlay" hidden>
+          <div id="watchUpPanel">
+            <h2>Daily watch time is up</h2>
+            <p>You've used all 45 minutes of watch time for today. Reset the timer to keep watching, or come back tomorrow for a fresh 45 minutes.</p>
+            <div id="watchUpActions">
+              <button id="watchCloseBtn">Not now</button>
+              <button id="watchResetBtn">Reset timer</button>
+            </div>
+          </div>
         </div>
       </div>
     </section>
