@@ -6,10 +6,11 @@
 # app. Re-run whenever the native shim changes (then rebuild the source APK).
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
-APK="${1:-$HERE/../../android/AniBrowser-android.apk}"
+# Default: the newest universal APK staged in the repo-root releases/ folder
+APK="${1:-$(ls "$HERE"/../../releases/AniNinja-v*-universal.apk 2>/dev/null | sort -V | tail -1 || true)}"
 DEST="$HERE/../modules/anibrowser-node/android/src/main/jniLibs"
 
-[ -f "$APK" ] || { echo "APK not found: $APK" >&2; exit 1; }
+[ -n "$APK" ] && [ -f "$APK" ] || { echo "usage: fetch-libs.sh <path to a universal AniNinja APK>" >&2; exit 1; }
 
 rm -rf "$DEST"
 mkdir -p "$DEST"

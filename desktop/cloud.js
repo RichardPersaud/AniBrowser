@@ -440,6 +440,61 @@ async function push() {
   if (up.status >= 400) throw new Error(`supabase push ${up.status}`);
 }
 
+// ---- feedback board ---------------------------------------------------------
+// Community feedback in the same Supabase project. Votes are keyed by the
+// signed-in Google user id, so each user gets exactly one vote per item.
+
+async function listFeedback() {
+  const token = await getAccessToken();
+  if (!token) throw new Error(lastError || 'not signed in');
+  const r = await reqJson('GET',
+    `${apiBase()}/rest/v1/feedback?select=*,votes:feedback_votes(value,user_id)&order=created_at.desc`, {
+    headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${token}` },
+  });
+  if (r.status >= 400) throw new Error(`feedback list ${r.status}`);
+  return Array.isArray(r.json) ? r.json : [];
+}
+
+async function addFeedback({ title, body, authorName }) {
+  const token = await getAccessToken();
+  if (!token) throw new Error(lastError || 'not signed in');
+  const r = await reqJson('POST',
+    `${apiBase()}/rest/v1/feedback?select=*,votes:feedback_votes(value,user_id)`, {
+    headers: {
+      apikey: SUPABASE_ANON_KEY,
+      Authorization: `Bearer ${token}`,
+      Prefer: 'return=representation',
+    },
+    body: { author_name: authorName || null, title, body },
+  });
+  if (r.status >= 400) throw new Error(`feedback insert ${r.status}`);
+  return (r.json && r.json[0]) || null;
+}
+
+// value 1 / -1 upserts the caller's single vote row; 0 deletes it.
+async function setVote(feedbackId, value) {
+  const token = await getAccessToken();
+  if (!token) throw new Error(lastError || 'not signed in');
+  if (!value) {
+    const d = await reqJson('DELETE',
+      `${apiBase()}/rest/v1/feedback_votes?feedback_id=eq.${feedbackId}&user_id=eq.${session.user.id}`, {
+      headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${token}` },
+    });
+    if (d.status >= 400) throw new Error(`feedback vote ${d.status}`);
+    return;
+  }
+  const u = await reqJson('POST',
+    `${apiBase()}/rest/v1/feedback_votes?on_conflict=feedback_id,user_id`, {
+    headers: {
+      apikey: SUPABASE_ANON_KEY,
+      Authorization: `Bearer ${token}`,
+      Prefer: 'resolution=merge-duplicates,return=minimal',
+    },
+    body: { feedback_id: feedbackId, user_id: session.user.id, value },
+  });
+  if (u.status >= 400) throw new Error(`feedback vote ${u.status}`);
+}
+
 // One serialized sync step: pull-merge locally, then push the merged state.
 // Backoff ladder on failure; any success resets it.
 function scheduleRetry() {
@@ -477,6 +532,11 @@ function onLocalDataChanged() {
   clearTimeout(retryTimer); // a state change overrides any backoff wait
   retryTimer = null;
   pushTimer = setTimeout(() => { pushTimer = null; syncNow(); }, PUSH_DEBOUNCE);
+}
+
+// The signed-in Supabase auth uid (used to attribute votes), or null.
+function userId() {
+  return (session && session.user && session.user.id) || null;
 }
 
 function status() {
@@ -642,6 +702,10 @@ module.exports = {
   status,
   onLocalDataChanged,
   syncNow,
+  listFeedback,
+  addFeedback,
+  setVote,
+  userId,
   handleCallback,
   callbackPath: CALLBACK_PATH,
   avatarInfo,

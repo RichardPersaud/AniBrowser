@@ -262,7 +262,36 @@ async function details(slug) {
     related: parseRelated(html),
   };
   detailCache.set(slug, { t: Date.now(), data });
+  ratingCache.set(slug, { t: Date.now(), v: data.pgRating }); // seed the cheap path
   return data;
+}
+
+// ---- per-title content rating ----------------------------------------------
+// The source tags only its adult-catalog entries with the 18+ card tick; shows
+// merely rated R / R+ / Rx look like regular cards. Their rating lives on the
+// detail page's pg tick, so the UI pulls it per visible card when the R-content
+// setting is set to Hide. Ratings never change — cache a full week.
+
+const ratingCache = new Map(); // slug -> { t, v }
+const RATING_TTL = 7 * 24 * 60 * 60 * 1000;
+
+async function ratingFor(slug) {
+  const c = ratingCache.get(slug);
+  if (c && Date.now() - c.t < RATING_TTL) return c.v;
+  const d = await details(slug); // seeds ratingCache itself
+  return d.pgRating;
+}
+
+// batch lookup for the UI's post-render sweep; unknown slugs resolve to null
+async function ratings(slugs) {
+  const out = {};
+  // batched to keep the concurrent request count at the source modest
+  for (let i = 0; i < slugs.length; i += 10) {
+    await Promise.all(slugs.slice(i, i + 10).map(async (s) => {
+      try { out[s] = await ratingFor(s); } catch { /* one miss shouldn't sink the batch */ }
+    }));
+  }
+  return out;
 }
 
 // ---- episode list ----------------------------------------------------------
@@ -383,7 +412,10 @@ async function getSources(slug, epNum, type = 'sub') {
     for (const mode of [true, false]) {
       for (const embed of candidates) {
         const src = await tryEmbed(embed, mode);
-        if (src) return src;
+        // audioType = the track this stream actually is — when the requested
+        // type has no embeds we silently resolve the other one, and the UI
+        // needs to know so it can say so instead of playing the wrong audio
+        if (src) return { ...src, audioType };
       }
     }
     return null;
@@ -403,5 +435,5 @@ async function getSources(slug, epNum, type = 'sub') {
 
 module.exports = {
   UA, BASE, search, recentlyUpdated, browse, browsePath, upcoming, details,
-  episodes, getSources, isDeadEp,
+  episodes, getSources, isDeadEp, ratings, ratingFor,
 };

@@ -5,17 +5,15 @@ node_modules/
 dist/
 *.log
 
-# scraped probe pages / local test artifacts
-probe/
-.probe-data/
-suggest.json
-smoke.log
-.imgtool/
-
 # local build artifacts (the installable APK ships via GitHub Releases instead)
 *.apk
-android/mobile-launch.png
+releases/
 
-# expo app: local agent settings and gradle intermediates
-expo-app/.claude/
+# local agent/tooling workspace (not part of the app)
+.claude/
+.agents/
+skills-lock.json
+brag-output/
+
+# expo app: gradle intermediates
 expo-app/modules/**/android/build/

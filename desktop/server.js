@@ -314,6 +314,22 @@ function readBody(stream) {
   });
 }
 
+// Raw PostgREST row (with embedded votes) → the shape the UI consumes.
+function decorateFeedback(row) {
+  const uid = cloudMod().userId();
+  const votes = (row.votes || []).filter((v) => v && (v.value === 1 || v.value === -1));
+  return {
+    id: row.id,
+    title: row.title,
+    body: row.body,
+    author: row.author_name || 'anonymous',
+    createdAt: row.created_at,
+    score: votes.reduce((s, v) => s + v.value, 0),
+    myVote: (votes.find((v) => v.user_id === uid) || {}).value || 0,
+    mine: row.user_id === uid,
+  };
+}
+
 async function route(req, res) {
   const url = new URL(req.url, 'http://127.0.0.1');
   const q = url.searchParams;
@@ -403,11 +419,22 @@ async function route(req, res) {
     try {
       if (req.method === 'POST') {
         const body = await readJsonBody(req);
+        // keep any tombstones already in the file — the UI always sends its
+        // full set, but a stale/older client could omit them and a missing
+        // tombstone here means the next cloud sync resurrects the deletion
+        const prev = (await readBackup().catch(() => null)) || {};
+        const pt = body.tombstones || {};
+        const ppt = prev.tombstones || {};
         // respond immediately; the actual write is queued and async
         queueBackupWrite({
           prefs: body.prefs && typeof body.prefs === 'object' ? body.prefs : {},
+          prefsTs: Number(body.prefsTs) || prev.prefsTs || 0,
           favorites: body.favorites && typeof body.favorites === 'object' ? body.favorites : {},
           progress: body.progress && typeof body.progress === 'object' ? body.progress : {},
+          tombstones: {
+            favorites: { ...(ppt.favorites || {}), ...(pt.favorites || {}) },
+            progress: { ...(ppt.progress || {}), ...(pt.progress || {}) },
+          },
           savedAt: new Date().toISOString(),
         });
         return sendJson(res, 200, { ok: true });
@@ -521,6 +548,50 @@ async function route(req, res) {
   if (p === '/api/sync') {
     cloudMod().syncNow();
     return sendJson(res, 200, cloudMod().status());
+  }
+
+  // ---- feedback board (same Supabase project; sign-in required) ----
+  if (p === '/api/feedback' && req.method === 'GET') {
+    const items = (await cloudMod().listFeedback()).map(decorateFeedback);
+    return sendJson(res, 200, { items });
+  }
+  if (p === '/api/feedback' && req.method === 'POST') {
+    const b = await readJsonBody(req);
+    const title = String(b.title || '').trim();
+    const body = String(b.body || '').trim();
+    if (!title || !body) return sendJson(res, 400, { error: 'title and body are required' });
+    if (title.length > 120) return sendJson(res, 400, { error: 'title too long (max 120)' });
+    if (body.length > 2000) return sendJson(res, 400, { error: 'body too long (max 2000)' });
+    // the profile edit (prefs.profile) decides the byline: a custom username
+    // wins; hide-email with no custom name posts as Anonymous (the Google
+    // fallback name can be the bare email, which hide-email must not leak)
+    const prof = ((await readBackup().catch(() => null))?.prefs || {}).profile || {};
+    let authorName = cloudMod().status().name || null;
+    if (prof.name) authorName = prof.name;
+    else if (prof.hideEmail) authorName = 'Anonymous';
+    const row = await cloudMod().addFeedback({ title, body, authorName });
+    if (!row) return sendJson(res, 500, { error: 'feedback was not saved' });
+    return sendJson(res, 200, { item: decorateFeedback(row) });
+  }
+  if (p === '/api/feedback/vote' && req.method === 'POST') {
+    const b = await readJsonBody(req);
+    const value = parseInt(b.value, 10);
+    if (!b.id || ![0, 1, -1].includes(value)) {
+      return sendJson(res, 400, { error: 'id and value (-1, 0 or 1) are required' });
+    }
+    await cloudMod().setVote(b.id, value);
+    return sendJson(res, 200, { ok: true });
+  }
+
+  // content ratings for a batch of cards (feeds the R-content Hide filter —
+  // the source only tick-marks its adult-catalog titles, R/R+ need a lookup)
+  if (p === '/api/ratings' && req.method === 'POST') {
+    const b = await readJsonBody(req);
+    const slugs = (Array.isArray(b.slugs) ? b.slugs : [])
+      .filter((s) => typeof s === 'string' && /^[a-z0-9-]+$/i.test(s))
+      .slice(0, 60);
+    if (!slugs.length) return sendJson(res, 200, { ratings: {} });
+    return sendJson(res, 200, { ratings: await scraper.ratings(slugs) });
   }
 
   // The cached profile photo (downloaded by cloud.js so the avatar works

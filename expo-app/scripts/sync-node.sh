@@ -5,19 +5,20 @@
 # Run after every change to shared code, before building the APK.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+APP="$ROOT/desktop"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 DEST="$HERE/../assets/nodejs-project.zip"
 STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
 
 mkdir -p "$STAGE/nodejs-project/ui"
-cp "$ROOT/server.js" "$ROOT/cloud.js" "$ROOT/scraper.js" "$STAGE/nodejs-project/"
-cp "$ROOT/expo-app/node-stub/index.js" "$ROOT/expo-app/node-stub/updater.js" "$STAGE/nodejs-project/"
-cp "$ROOT"/ui/index.html "$ROOT"/ui/style.css "$ROOT"/ui/app.js "$ROOT"/ui/hls.min.js "$ROOT"/ui/empty.png "$ROOT"/ui/logo.png "$ROOT"/ui/logo-nav.png "$ROOT"/ui/logo-t.png "$STAGE/nodejs-project/ui/"
+cp "$APP/server.js" "$APP/cloud.js" "$APP/scraper.js" "$STAGE/nodejs-project/"
+cp "$HERE/../node-stub/index.js" "$HERE/../node-stub/updater.js" "$STAGE/nodejs-project/"
+cp "$APP"/ui/index.html "$APP"/ui/style.css "$APP"/ui/app.js "$APP"/ui/hls.min.js "$APP"/ui/empty.png "$APP"/ui/logo.png "$APP"/ui/logo-nav.png "$APP"/ui/logo-t.png "$STAGE/nodejs-project/ui/"
 
 # keep the bundled version identical to the Electron app's
-VER="$(grep -o '"version": *"[^"]*"' "$ROOT/package.json" | head -1 | sed 's/.*"\(.*\)"/\1/')"
-sed "s/\"version\": *\"[^\"]*\"/\"version\": \"$VER\"/" "$ROOT/expo-app/node-stub/package.json" > "$STAGE/nodejs-project/package.json"
+VER="$(grep -o '"version": *"[^"]*"' "$APP/package.json" | head -1 | sed 's/.*"\(.*\)"/\1/')"
+sed "s/\"version\": *\"[^\"]*\"/\"version\": \"$VER\"/" "$HERE/../node-stub/package.json" > "$STAGE/nodejs-project/package.json"
 
 rm -f "$DEST"
 # Windows ships bsdtar which can write zip; plain `zip` is missing on Git Bash
