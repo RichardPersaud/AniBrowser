@@ -2707,6 +2707,12 @@ function renderUpdateUI(u) {
   const banner = $('updateBanner');
   const visible = !updateDismissed && ['available', 'downloading', 'ready'].includes(u.state);
   banner.hidden = !visible;
+  // "Open folder" shows wherever an update file exists or is arriving —
+  // desktop reveals the updater's pending dir, Android copies the APK into
+  // public Downloads (dev builds never download anything)
+  const showDir = ['downloading', 'ready'].includes(u.state) && !u.disabled && !u.external;
+  $('openUpdateDirBtn').hidden = !showDir;
+  $('openUpdateDirSettingsBtn').hidden = !showDir;
   if (visible) {
     const btn = $('updateAction');
     btn.hidden = false;
@@ -2725,7 +2731,15 @@ function renderUpdateUI(u) {
       btn.disabled = false;
     }
   }
-  // settings row mirrors the state
+  // settings row mirrors the state — one button that walks
+  // Check now → Download now → Install update
+  const cbtn = $('checkUpdateBtn');
+  cbtn.disabled = u.state === 'downloading';
+  if (u.state === 'downloading') cbtn.textContent = `Downloading… ${u.progress || 0}%`;
+  else if (u.state === 'ready') cbtn.textContent = IS_ANDROID ? 'Install update' : 'Restart to install';
+  else if (u.state === 'available') cbtn.textContent = u.external ? 'Open releases page' : 'Download now';
+  else cbtn.innerHTML = '<svg class="icon"><use href="#i-refresh"></use></svg> Check now';
+  // status text
   const st = $('updateStatusText');
   if (u.error) st.textContent = `Update check failed — will retry`;
   else if (u.state === 'idle') st.textContent = u.disabled ? 'Up to date (dev — no self-update)' : 'Up to date';
@@ -2744,24 +2758,22 @@ async function pollUpdate() {
   } catch { /* server hiccup; next poll retries */ }
 }
 
-$('updateAction').addEventListener('click', async () => {
-  if (lastUpdate && lastUpdate.external) {
-    // dev build + newer release exists: self-update is impossible, open GitHub
-    window.open('https://github.com/RichardPersaud/AniBrowser/releases/latest', '_blank');
-    return;
-  }
-  if (updateState === 'ready' && IS_ANDROID) {
-    // hand the downloaded APK to the system installer via the Expo shell
-    if (!lastUpdate || !lastUpdate.apkPath) return toast('Update file missing — re-download', true);
-    window.location.href = `anibrowser-install://apk?path=${encodeURIComponent(lastUpdate.apkPath)}`;
-    return;
-  }
-  const action = updateState === 'ready' ? 'install' : 'download';
-  if (action === 'download' && updateState === 'downloading') return; // already running
+// dev build + newer release exists: self-update is impossible, open GitHub
+function openReleasesPage() {
+  window.open('https://github.com/RichardPersaud/AniBrowser/releases/latest', '_blank');
+}
+
+// Android only: hand the downloaded APK to the system installer via the shell
+function installAndroidApk() {
+  if (!lastUpdate || !lastUpdate.apkPath) return toast('Update file missing — re-download', true);
+  window.location.href = `anibrowser-install://apk?path=${encodeURIComponent(lastUpdate.apkPath)}`;
+}
+
+// download/install via the server; the download POST only returns once the
+// download itself is done, so show the progress bar first — that flips
+// updateState, which starts the 1s poll streaming real progress in
+async function runUpdate(action) {
   if (action === 'download') {
-    // optimistic: the download POST only returns once the download itself is
-    // done, so show the progress bar now — this also flips updateState, which
-    // starts the 1s poll that streams real progress in while it runs
     renderUpdateUI({ ...(lastUpdate || {}), state: 'downloading', progress: 0 });
   }
   try {
@@ -2771,20 +2783,48 @@ $('updateAction').addEventListener('click', async () => {
     toast('Update failed: ' + e.message, true);
     pollUpdate(); // pull the real state back in (failure reverts to available)
   }
+}
+
+$('updateAction').addEventListener('click', () => {
+  if (lastUpdate && lastUpdate.external) return openReleasesPage();
+  if (updateState === 'ready' && IS_ANDROID) return installAndroidApk();
+  return runUpdate(updateState === 'ready' ? 'install' : 'download');
 });
 $('updateDismiss').addEventListener('click', () => {
   updateDismissed = true;
-  renderUpdateUI({ state: updateState });
+  renderUpdateUI({ ...(lastUpdate || {}), state: updateState });
 });
-$('checkUpdateBtn').addEventListener('click', async () => {
+$('checkUpdateBtn').addEventListener('click', () => {
+  if (updateState === 'downloading') return; // progress streams in via the 1s poll
+  if (updateState === 'ready' && IS_ANDROID) return installAndroidApk();
+  if (updateState === 'ready') return runUpdate('install');
+  if (lastUpdate && lastUpdate.external) return openReleasesPage();
+  if (updateState === 'available') return runUpdate('download');
+  // idle → fresh check
   $('updateStatusText').textContent = 'Checking…';
-  try {
-    await api('/api/update', { action: 'check' });
-  } catch (e) {
-    toast('Update check failed: ' + e.message, true);
-  }
-  pollUpdate();
+  api('/api/update', { action: 'check' })
+    .then(() => pollUpdate())
+    .catch((e) => {
+      toast('Update check failed: ' + e.message, true);
+      pollUpdate();
+    });
 });
+// reveal the update files: desktop opens the updater's pending dir, Android
+// copies the APK into public Downloads and opens the system Downloads list
+// (two buttons — banner + settings row — share this handler)
+['openUpdateDirBtn', 'openUpdateDirSettingsBtn'].forEach((id) => $(id).addEventListener('click', async () => {
+  if (IS_ANDROID) {
+    const path = lastUpdate && lastUpdate.apkPath;
+    if (!path) return toast('No update downloaded yet', true);
+    window.ReactNativeWebView?.postMessage(JSON.stringify({ type: 'openUpdatesDir', path }));
+    return;
+  }
+  try {
+    await api('/api/update', { action: 'openDir' });
+  } catch (e) {
+    toast('Could not open folder: ' + e.message, true);
+  }
+}));
 
 /* ---- first-launch terms & conditions ----
    Nothing in the app is usable until these are accepted once; acceptance is
@@ -2797,6 +2837,8 @@ window.addEventListener('message', (ev) => {
     const msg = typeof ev.data === 'string' ? JSON.parse(ev.data) : ev.data;
     if (msg && msg.type === 'installError') {
       toast('Install failed: ' + (msg.error || 'unknown error'), true);
+    } else if (msg && msg.type === 'shellToast') {
+      toast(String(msg.text || ''), !!msg.error);
     }
   } catch { /* non-JSON — ignore */ }
 });

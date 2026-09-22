@@ -3,8 +3,10 @@
 // package.json build.publish). The app checks on launch and every 6h, tells
 // the UI via server.js /api/update routes, and downloads/installs only when
 // the user clicks. Inert in dev (unpackaged) builds.
-const { app } = require('electron');
+const { app, shell } = require('electron');
 const { autoUpdater } = require('electron-updater');
+const fs = require('fs');
+const path = require('path');
 
 let status = { state: 'idle', version: null, progress: 0, error: null };
 let inited = false;
@@ -35,8 +37,9 @@ function initUpdater() {
     status = { state: 'idle', version: status.version, progress: 0, error: String(e && e.message || e) };
   });
 
-  // first check shortly after launch so the window isn't busy at startup
-  setTimeout(() => { try { autoUpdater.checkForUpdates(); } catch (e) { status.error = String(e.message || e); } }, 30000);
+  // check right after launch (a short delay keeps the window boot from
+  // competing with the network call), then again every 6h
+  setTimeout(() => { try { autoUpdater.checkForUpdates(); } catch (e) { status.error = String(e.message || e); } }, 3000);
   setInterval(() => { try { autoUpdater.checkForUpdates(); } catch { /* next tick retries */ } }, 6 * 60 * 60 * 1000);
 }
 
@@ -47,6 +50,13 @@ function updaterStatus() {
 
 const GH_LATEST =
   'https://api.github.com/repos/RichardPersaud/AniBrowser/releases/latest';
+
+// electron-updater stages installers in <cache>/AniNinja-updater/pending before
+// the restart-and-install step — this is the folder the settings "Open folder"
+// button reveals
+function downloadDir() {
+  return path.join(app.getPath('cache'), 'AniNinja-updater', 'pending');
+}
 
 // Dev builds can't self-update (electron-updater needs an installed app), but
 // the version check can still run for real: read the latest GitHub release and
@@ -97,6 +107,13 @@ async function updaterAction(action) {
     app.removeAllListeners('window-all-closed');
     setImmediate(() => autoUpdater.quitAndInstall(true, true));
     return { ...status, state: 'installing' };
+  }
+  if (action === 'openDir') {
+    const dir = downloadDir();
+    try { fs.mkdirSync(dir, { recursive: true }); } catch { /* openPath reports it */ }
+    const err = await shell.openPath(dir);
+    if (err) throw new Error(err);
+    return { ...status, dir };
   }
   throw new Error(`Unknown update action: ${action}`);
 }

@@ -11,7 +11,9 @@ type AniBrowserNodeModule = {
   /** Post a system notification (favorites update). Requests POST_NOTIFICATIONS first on API 33+. */
   notify(title: string, body: string): boolean;
   /** Hand a downloaded APK file to the system package installer. */
-  installApk(path: string): boolean;
+  installApk(path: string): Promise<boolean>;
+  /** Copy the APK into public Downloads (API 29+) and open the Downloads list. */
+  openUpdatesDir(path: string): Promise<boolean>;
 };
 
 export default requireNativeModule('AniBrowserNode') as AniBrowserNodeModule;

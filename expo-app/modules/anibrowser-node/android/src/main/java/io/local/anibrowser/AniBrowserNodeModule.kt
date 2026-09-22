@@ -2,13 +2,18 @@ package io.local.anibrowser
 
 import io.local.anibrowser.node.R // module namespace — R lives one level down
 import android.Manifest
+import android.app.DownloadManager
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.ContentValues
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
+import android.provider.Settings
 import android.util.Log
 import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
@@ -147,21 +152,91 @@ class AniBrowserNodeModule : Module() {
             true
         }
 
-        // hand a downloaded APK to the system package installer via FileProvider
-        Function("installApk") { path: String ->
+        // hand a downloaded APK to the system package installer via FileProvider.
+        // Async on purpose: a sync Function that throws surfaces as an unhandled
+        // JS exception in the WebView shell and kills the whole app — every
+        // failure path below must reject the promise so App.tsx can toast it.
+        AsyncFunction("installApk") { path: String, promise: Promise ->
             val activity = appContext.currentActivity
-                ?: throw Exception("no foreground activity")
-            val file = File(path)
-            if (!file.exists()) throw Exception("APK not found: $path")
-            val uri: Uri = FileProvider.getUriForFile(
-                activity, "${activity.packageName}.fileprovider", file
-            )
-            val intent = Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(uri, "application/vnd.android.package-archive")
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+            val context = appContext.reactContext
+            if (activity == null || context == null) {
+                promise.reject("NO_ACTIVITY", "app is in the background — reopen it and tap install again", null)
+                return@AsyncFunction
             }
-            activity.startActivity(intent)
-            true
+            Thread {
+                try {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+                        !activity.packageManager.canRequestPackageInstalls()
+                    ) {
+                        // Android 8+ refuses installer intents until the user
+                        // flips "install unknown apps" for this app
+                        activity.startActivity(
+                            Intent(
+                                Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                                Uri.parse("package:${activity.packageName}")
+                            ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        )
+                        promise.reject(
+                            "NEED_INSTALL_PERMISSION",
+                            "Allow AniNinja to install apps, then tap Install update again",
+                            null
+                        )
+                        return@Thread
+                    }
+
+                    var file = File(path)
+                    if (!file.exists()) throw Exception("APK not found: $path")
+                    val uri = try {
+                        FileProvider.getUriForFile(activity, "${activity.packageName}.fileprovider", file)
+                    } catch (t: Throwable) {
+                        // the APK sits outside the roots in file_paths.xml — copy it
+                        // into the app cache, which file_paths.xml always covers
+                        val shared = File(File(context.cacheDir, "updates"), file.name)
+                        shared.parentFile?.mkdirs()
+                        if (!shared.exists()) File(path).copyTo(shared, overwrite = true)
+                        file = shared
+                        FileProvider.getUriForFile(activity, "${activity.packageName}.fileprovider", file)
+                    }
+                    activity.startActivity(
+                        Intent(Intent.ACTION_VIEW).apply {
+                            setDataAndType(uri, "application/vnd.android.package-archive")
+                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+                        }
+                    )
+                    promise.resolve(true)
+                } catch (t: Throwable) {
+                    Log.e(TAG, "installApk failed", t)
+                    promise.reject("INSTALL_FAILED", t.message ?: "install failed", t)
+                }
+            }.start()
+        }
+
+        // "open the folder where updates download" — Android keeps the APK in the
+        // app's private files dir, which no file manager can reach, so copy it
+        // into public Downloads (MediaStore, one copy per version) and open the
+        // system Downloads list where the user can see and re-share it
+        AsyncFunction("openUpdatesDir") { path: String, promise: Promise ->
+            val activity = appContext.currentActivity
+            val context = appContext.reactContext
+            if (activity == null || context == null) {
+                promise.reject("NO_ACTIVITY", "app is in the background", null)
+                return@AsyncFunction
+            }
+            Thread {
+                try {
+                    val src = File(path)
+                    if (!src.exists()) throw Exception("APK not found: $path")
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) copyToDownloads(context, src)
+                    activity.startActivity(
+                        Intent(DownloadManager.ACTION_VIEW_DOWNLOADS)
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    )
+                    promise.resolve(true)
+                } catch (t: Throwable) {
+                    Log.e(TAG, "openUpdatesDir failed", t)
+                    promise.reject("OPEN_DIR_FAILED", t.message ?: "could not open the updates folder", t)
+                }
+            }.start()
         }
     }
 
@@ -172,6 +247,34 @@ class AniBrowserNodeModule : Module() {
         ).apply { description = "New episodes of anime in your favorites list" }
         context.getSystemService(NotificationManager::class.java)
             .createNotificationChannel(channel)
+    }
+
+    /** Copy an APK into public Downloads (MediaStore), skipping a re-copy when
+     *  the same file name is already there. Best-effort: false on any failure. */
+    private fun copyToDownloads(context: android.content.Context, src: File): Boolean = try {
+        val cr = context.contentResolver
+        val name = src.name
+        val dup = cr.query(
+            MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+            arrayOf(MediaStore.MediaColumns._ID),
+            "${MediaStore.MediaColumns.DISPLAY_NAME}=? AND ${MediaStore.MediaColumns.RELATIVE_PATH}=?",
+            arrayOf(name, Environment.DIRECTORY_DOWNLOADS + "/"),
+            null
+        )!!.use { c -> c.moveToFirst() }
+        if (!dup) {
+            val values = ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, name)
+                put(MediaStore.MediaColumns.MIME_TYPE, "application/vnd.android.package-archive")
+                put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+            }
+            val uri = cr.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                ?: throw Exception("MediaStore refused the download entry")
+            cr.openOutputStream(uri)!!.use { out -> src.inputStream().use { it.copyTo(out) } }
+        }
+        true
+    } catch (t: Throwable) {
+        Log.w(TAG, "copyToDownloads failed", t)
+        false
     }
 
     private fun existingPort(marker: File): Int? {

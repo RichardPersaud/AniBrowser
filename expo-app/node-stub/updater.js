@@ -142,8 +142,9 @@ async function download(url, dest, onProgress) {
 function initUpdater() {
   if (inited) return;
   inited = true;
-  // first check shortly after launch, then every 6h (mirrors the Electron cadence)
-  setTimeout(() => { check().catch(() => { /* status already carries the error */ }); }, 30000);
+  // check right after launch (short delay so node boot isn't competing with
+  // the WebView handshake), then every 6h (mirrors the Electron cadence)
+  setTimeout(() => { check().catch(() => { /* status already carries the error */ }); }, 3000);
   setInterval(() => { check().catch(() => { /* next tick retries */ }); }, 6 * 60 * 60 * 1000);
 }
 
