@@ -235,6 +235,16 @@ function Shell() {
                 // favorites update → system notification (POST_NOTIFICATIONS is
                 // requested by the module on the first call)
                 AniBrowserNode.notify(String(msg.title ?? ''), String(msg.body ?? ''));
+              } else if (msg.type === 'openUpdatesDir') {
+                // "Open folder" on the update row — the APK lives in the app's
+                // private files dir, so copy it into public Downloads and open
+                // the system Downloads list where the user can actually see it
+                AniBrowserNode.openUpdatesDir(String(msg.path ?? '')).catch((e) => {
+                  console.log('[shell] open updates dir failed', e);
+                  webRef.current?.postMessage(
+                    JSON.stringify({ type: 'shellToast', text: 'Could not open updates folder', error: true })
+                  );
+                });
               } else if (msg.type === 'openExternal') {
                 // cloud sign-in: Google OAuth (and its loopback callback) must
                 // run outside this WebView — Google rejects OAuth in embedded
