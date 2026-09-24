@@ -1238,8 +1238,34 @@ async function loadUpcoming() {
   try {
     const { results } = await api('/api/upcoming');
     upcomingData = results;
+    checkStaleUpcoming(results); // async — render now, drop stale cards when known
     renderUpcoming();
   } catch { /* best-effort: the sections simply stay hidden */ }
+}
+
+// The source keeps shows listed as upcoming after their premiere date has
+// passed — when zero episodes have aired (the date is simply never removed),
+// the card sits in "Coming soon" forever. One batched episode-count call
+// flags those as stale; every slug is only verified once per session.
+const staleUpcomingChecked = new Set();
+function checkStaleUpcoming(items) {
+  const due = items.filter((r) => {
+    if (staleUpcomingChecked.has(r.slug)) return false;
+    // a full "Sep 7, 2026" date only — year-less dates can't prove staleness
+    return /^[A-Za-z]{3,9}\s+\d{1,2},\s*\d{4}$/.test(r.date || '') &&
+      Date.now() - Date.parse(r.date) > 36 * 3600 * 1000; // grace: airing day
+  });
+  for (const r of due) staleUpcomingChecked.add(r.slug);
+  if (!due.length) return;
+  api('/api/epcounts', { slugs: due.map((r) => r.slug) })
+    .then(({ counts }) => {
+      let changed = false;
+      for (const r of due) {
+        if (counts[r.slug] === 0) { r.stale = true; changed = true; }
+      }
+      if (changed) renderUpcoming(); // re-render without the stale cards
+    })
+    .catch(() => {});
 }
 
 // re-render both the marquee and the Coming soon grid (also called when the
@@ -1249,9 +1275,13 @@ function renderUpcoming() {
   renderUpcomingSection();
 }
 
+// premiere date passed but zero episodes aired — the source just never removes
+// the date, so these are dropped everywhere "Coming soon" is shown
+function notStale(r) { return !r.stale; }
+
 function renderUpcomingSection() {
   const section = $('upcomingSection');
-  const items = (upcomingData || []).filter(r18Visible);
+  const items = (upcomingData || []).filter(r18Visible).filter(notStale);
   if (!items.length) { section.hidden = true; return; }
   // group by release year — only the current one and the next are shown
   const yNow = new Date().getFullYear();
@@ -1297,7 +1327,7 @@ function renderUpcomingSection() {
 function renderUpcomingMarquee() {
   const wrap = $('upMarquee');
   const track = $('upTrack');
-  const items = (upcomingData || []).filter(r18Visible).slice(0, 14);
+  const items = (upcomingData || []).filter(r18Visible).filter(notStale).slice(0, 14);
   if (!items.length) { wrap.hidden = true; return; }
   track.innerHTML = '';
   const build = () => {
@@ -1532,14 +1562,22 @@ async function loadDetailInfo() {
 }
 
 /* ---- audio availability ----
-   The detail page tags SUB/DUB episode counts; a count of 0 means the show has
-   no episodes in that track. Drop the missing half of the SUB/DUB toggles and
-   pin state.type to a track that exists (syncSwapToggle applies both toggles). */
+   The detail page tags SUB/DUB episode counts — but the source ships non-zero
+   counts even on sub-only shows, so they only ever *hide* a track when the
+   count is an explicit 0. The real ground truth is the episode list's per-
+   episode server list (d.audio from /api/episodes), which wins whenever we
+   have it. A missing half of the SUB/DUB toggles is hidden, and state.type is
+   pinned to a track that exists (syncSwapToggle applies both toggles). */
 function applyAudioAvail(d) {
-  state.audioAvail = {
-    sub: d.subCount !== '0',
-    dub: d.dubCount !== '0',
-  };
+  if (d.audio) state.audioProbed = true; // probe data beats the counts
+  else if (state.audioProbed) return; // ...and survives a slower detail reply
+  state.audioAvail = d.audio
+    ? { ...d.audio }
+    : (() => {
+        const sub = d.subCount && d.subCount !== '0';
+        const dub = d.dubCount && d.dubCount !== '0';
+        return { sub: sub || (!sub && !dub), dub };
+      })();
   if (!state.audioAvail[state.type]) {
     state.type = state.audioAvail.sub ? 'sub' : 'dub';
   }
@@ -1718,7 +1756,8 @@ async function openDetail(slug, title, poster, onReady) {
   state.title = title;
   state.poster = poster;
   state.epNum = null;
-  state.audioAvail = null; // unknown until the detail page loads (applyAudioAvail)
+  state.audioAvail = null; // unknown until the detail/episodes data lands
+  state.audioProbed = false; // set once the server-list probe answers
   state.type = prefAudioType();
   syncSwapToggle();
   $('detailTitle').textContent = title;
@@ -1740,8 +1779,9 @@ async function openDetail(slug, title, poster, onReady) {
   $('epLoading').hidden = true;
   renderSkeletonEps($('epGrid'), 12);
   try {
-    const { episodes } = await api(`/api/episodes?slug=${encodeURIComponent(slug)}`);
+    const { episodes, audio } = await api(`/api/episodes?slug=${encodeURIComponent(slug)}`);
     state.episodes = episodes;
+    if (audio) applyAudioAvail({ audio }); // hide toggles the show doesn't have
     $('epCount').textContent = `${episodes.length} episodes`;
     renderEpisodes();
     if (onReady) onReady();
@@ -1869,6 +1909,14 @@ async function startPlayback(epNum, type, opts = {}) {
   }
   const playId = (state.playId = (state.playId || 0) + 1);
   showView('playerView');
+  // entering the player without a detail visit (continue-watching row, the
+  // profile's Watching tab) leaves availability unknown — probe it in the
+  // background so a sub-only show's DUB toggle disappears mid-session
+  if (!state.audioAvail) {
+    api(`/api/episodes?slug=${encodeURIComponent(state.slug)}`)
+      .then((d) => { if (d.audio) applyAudioAvail({ audio: d.audio }); })
+      .catch(() => {});
+  }
   $('playerTitle').textContent = state.title;
   $('playerEp').textContent = `EP ${epNum} (${type.toUpperCase()})`;
   $('playerLoading').hidden = false;
@@ -2022,8 +2070,10 @@ function setupWatchers(src) {
     if (!video.paused) saveProgress();
   }, 5000);
 
-  // daily watch budget: snapshot today's remaining time, then tick per second
+  // daily watch budget: snapshot today's remaining time, then tick per second.
+  // The same tick also feeds the lifetime counter (profile page's watch time).
   state.watchUsed = storedWatchUsed();
+  state.watchTotal = Math.round(prefs().totalWatch || 0);
   state.watchDate = todayKey();
   state.watchTimer = setInterval(watchTick, 1000);
   updateWatchBadge();
@@ -2084,6 +2134,7 @@ function persistWatch() {
   if (state.watchUsed == null) return;
   const p = prefs();
   p.watchLimit = { date: todayKey(), used: state.watchUsed };
+  if (state.watchTotal != null) p.totalWatch = state.watchTotal;
   if (state.watchPersistNow) {
     state.watchPersistNow = false;
     setPrefs(p);
@@ -2115,6 +2166,7 @@ function watchTick() {
   // readyState < HAVE_FUTURE_DATA (3) = buffering/stalled — that time is free
   if (!video.paused && !video.ended && video.readyState >= 3 && video.currentTime > 0) {
     state.watchUsed += 1;
+    state.watchTotal += 1;
     if (state.watchUsed % 15 === 0) persistWatch();
     if (state.watchUsed >= DAILY_LIMIT) {
       video.pause(); // the 'pause' handler below persists the spent budget
@@ -2512,6 +2564,16 @@ function avatarSrc(s) {
   return profileEdit().avatar || (s && (s.pictureLocal || s.picture)) || null;
 }
 
+// lifetime playback seconds → "3h 12m" / "12m" / "40s"
+function fmtWatchTotal(sec) {
+  sec = Math.floor(sec || 0);
+  if (sec < 60) return `${sec}s`;
+  const m = Math.floor(sec / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  return `${h}h ${m % 60}m`;
+}
+
 function renderProfile(s) {
   s = s || lastSyncStatus;
   const signedIn = !!(s && s.signedIn);
@@ -2541,6 +2603,7 @@ function renderProfile(s) {
 
   $('statFavs').textContent = String(Object.keys(getFavs()).length);
   $('statWatched').textContent = String(Object.keys(getJSON()).length);
+  $('statWatchTime').textContent = fmtWatchTotal(prefs().totalWatch || 0);
 
   // one sync line — the state and the explanation merged
   const detail = $('profileSyncDetail');
@@ -2936,8 +2999,27 @@ function renderFeedback() {
     const content = el('div', 'fb-content');
     content.appendChild(el('div', 'fb-title', item.title));
     content.appendChild(el('div', 'fb-body', item.body));
-    content.appendChild(el('div', 'fb-meta',
-      `${item.author}${item.mine ? ' (you)' : ''} · ${relDate(item.createdAt)}`));
+    const meta = el('div', 'fb-meta',
+      `${item.author}${item.mine ? ' (you)' : ''} · ${relDate(item.createdAt)}`);
+    content.appendChild(meta);
+    // authors can remove their own post; the first click arms the button so a
+    // stray tap can't take the post down
+    if (item.mine) {
+      const del = el('button', 'fb-del', 'Delete');
+      del.title = 'Remove your feedback post';
+      del.addEventListener('click', () => {
+        if (del.textContent !== 'Delete') return removeFeedback(item);
+        del.textContent = 'Confirm?';
+        del.classList.add('armed');
+        setTimeout(() => {
+          if (del.isConnected && del.textContent === 'Confirm?') {
+            del.textContent = 'Delete';
+            del.classList.remove('armed');
+          }
+        }, 3000);
+      });
+      meta.appendChild(del);
+    }
     card.append(votes, content);
     list.appendChild(card);
   }
@@ -2960,6 +3042,17 @@ async function loadFeedback() {
 }
 
 // optimistic flip, then re-fetch — the server is the source of truth on score
+async function removeFeedback(item) {
+  try {
+    await api('/api/feedback/delete', { id: item.id });
+    feedbackItems = (feedbackItems || []).filter((x) => x.id !== item.id);
+    renderFeedback();
+    toast('Feedback deleted');
+  } catch (e) {
+    toast('Delete failed: ' + e.message, true);
+  }
+}
+
 async function voteFeedback(item, value) {
   const prev = item.myVote;
   try {

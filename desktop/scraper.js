@@ -320,6 +320,34 @@ async function episodes(slug) {
   return eps;
 }
 
+// Which audio tracks this show actually has, from the first episode's server
+// list — the only ground truth there is. The detail page's SUB/DUB counts are
+// non-zero even on shows with no dub at all, so the UI can't rely on them.
+// Cached alongside the episode list; null = unknown (no episodes / source error).
+const audioCache = new Map(); // numId -> { t, audio }
+async function audioTracks(slug) {
+  const numId = numIdFromSlug(slug);
+  const cached = audioCache.get(numId);
+  if (cached && Date.now() - cached.t < CACHE_TTL) return cached.audio;
+  let audio = null;
+  try {
+    const eps = await episodes(slug);
+    if (eps.length) {
+      const url = `${BASE}/api/theme/episode/servers?episodeId=${eps[0].epId}`;
+      const j = await (await get(url)).json();
+      const html = unescapeBackslashes(String(j.html || ''));
+      const types = new Set(
+        [...html.matchAll(/data-type="([^"]*)"/g)].map((m) => m[1])
+      );
+      audio = { sub: types.has('sub'), dub: types.has('dub') };
+    }
+  } catch {
+    audio = null; // network hiccup — the UI falls back to the detail counts
+  }
+  if (audio) audioCache.set(numId, { t: Date.now(), audio });
+  return audio;
+}
+
 // ---- source resolution -----------------------------------------------------
 
 function decodeBlob(b64) {
@@ -435,5 +463,5 @@ async function getSources(slug, epNum, type = 'sub') {
 
 module.exports = {
   UA, BASE, search, recentlyUpdated, browse, browsePath, upcoming, details,
-  episodes, getSources, isDeadEp, ratings, ratingFor,
+  episodes, audioTracks, getSources, isDeadEp, ratings, ratingFor,
 };

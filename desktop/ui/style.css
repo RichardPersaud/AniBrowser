@@ -570,6 +570,18 @@ body.on-feedback #backBtn:not([hidden]) { display: inline-flex; }
 .fb-title { font-size: 14px; font-weight: 600; margin-bottom: 4px; overflow-wrap: anywhere; }
 .fb-body { font-size: 12.5px; margin-bottom: 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .fb-meta { font-size: 11px; color: var(--muted); }
+.fb-del {
+  margin-left: 8px;
+  padding: 1px 6px;
+  font-size: 10px;
+  color: var(--muted);
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.fb-del:hover { color: var(--text); }
+.fb-del.armed { color: var(--danger); border-color: var(--danger); }
 @media (max-width: 540px) {
   #feedbackView { padding: 4px 12px 32px; }
   #feedbackHead { flex-wrap: wrap; }

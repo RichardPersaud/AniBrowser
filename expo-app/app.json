@@ -2,7 +2,7 @@
   "expo": {
     "name": "AniNinja",
     "slug": "anibrowser",
-    "version": "1.2.3",
+    "version": "1.2.4",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
@@ -11,7 +11,7 @@
     },
     "android": {
       "package": "io.local.anibrowser",
-      "versionCode": 10,
+      "versionCode": 11,
       "usesCleartextTraffic": true,
       "adaptiveIcon": {
         "backgroundColor": "#000000",
