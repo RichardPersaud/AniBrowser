@@ -436,10 +436,11 @@
         <div id="watchUpOverlay" hidden>
           <div id="watchUpPanel">
             <h2>Daily watch time is up</h2>
-            <p>You've used all 45 minutes of watch time for today. Reset the timer to keep watching, or come back tomorrow for a fresh 45 minutes.</p>
+            <p id="watchUpText">You've used all 45 minutes of watch time for today. Reset the timer to keep watching, or exit the player and come back tomorrow for a fresh 45 minutes.</p>
             <div id="watchUpActions">
-              <button id="watchCloseBtn">Not now</button>
-              <button id="watchResetBtn">Reset timer</button>
+              <button id="watchExitBtn">Exit player</button>
+              <button id="watchAdBtn" hidden>Watch ad — +45 min</button>
+              <button id="watchResetBtn" hidden>Reset timer</button>
             </div>
           </div>
         </div>
