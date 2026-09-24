@@ -2207,12 +2207,20 @@ if (!IS_ANDROID) {
 // rewarded ad and answers with an 'adReward' message (handled in the shell
 // message listener at the bottom of this file)
 let adRequestSeq = 0; // ignores stale replies after a retry
+let adRequestTimer = null; // safety net if the shell never answers
 $('watchAdBtn').addEventListener('click', () => {
   if (IS_ANDROID && window.ReactNativeWebView) {
     const btn = $('watchAdBtn');
     const seq = ++adRequestSeq;
     btn.disabled = true;
     btn.textContent = 'Loading ad…';
+    // if the shell never answers (dropped request, killed process), restore
+    // the button after 45s — a late reply is dropped by the seq check
+    clearTimeout(adRequestTimer);
+    adRequestTimer = setTimeout(() => {
+      btn.disabled = false;
+      btn.textContent = 'Watch ad — +45 min';
+    }, 45000);
     window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'showAd', seq }));
   }
 });
@@ -2941,6 +2949,7 @@ window.addEventListener('message', (ev) => {
       // stale replies (an older request that settled after a retry) are
       // dropped BEFORE touching the button — a newer request owns it now
       if (msg.seq && msg.seq !== adRequestSeq) return;
+      clearTimeout(adRequestTimer);
       const btn = $('watchAdBtn');
       btn.disabled = false;
       btn.textContent = 'Watch ad — +45 min';
@@ -2948,7 +2957,10 @@ window.addEventListener('message', (ev) => {
         resetWatchBudget();
         toast('Ad reward — 45:00 of watch time back');
       } else if (!$('watchUpOverlay').hidden) {
-        toast(msg.error ? 'Ad failed to load — try again' : 'Ad closed early — no reward', true);
+        toast(
+          msg.error ? 'Ad failed: ' + String(msg.error).slice(0, 80) : 'Ad closed early — no reward',
+          true
+        );
       }
     }
   } catch { /* non-JSON — ignore */ }

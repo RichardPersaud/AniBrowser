@@ -22,7 +22,7 @@ import {
   RewardedAd,
   RewardedAdEventType,
 } from 'react-native-google-mobile-ads';
-import { REWARDED_AD_UNIT_ID } from './ads';
+import { REWARDED_AD_UNIT_ID, TEST_REWARDED_AD_UNIT_ID } from './ads';
 import AniBrowserNode from './modules/anibrowser-node';
 
 // single zip asset containing the whole node runtime (server + scraper + ui)
@@ -67,6 +67,16 @@ true;
 // the node updater hands APK installs over as anibrowser-install://apk?path=…
 // links; the WebView can't open them, so intercept and call the native installer
 const INSTALL_SCHEME = 'anibrowser-install://';
+
+// shell → web messaging: the WebView ref's postMessage() dispatches on
+// `document` (Android legacy channel) which the page's
+// `window.addEventListener('message')` never sees — inject a real MessageEvent
+// on `window` instead. The payload must arrive as a JSON STRING: the page's
+// handler string-parses it like every other bridge message.
+function webPostMessage(web: WebView | null, payload: object) {
+  const json = JSON.stringify(JSON.stringify(payload));
+  web?.injectJavaScript(`window.dispatchEvent(new MessageEvent('message', {data: ${json}})); true;`);
+}
 
 async function bootNode(): Promise<number> {
   const dataDir = Paths.document.uri.replace(/^file:\/\//, '').replace(/\/+$/, '');
@@ -146,30 +156,55 @@ function Shell() {
   const adBusy = useRef(false);
   const showRewardedAd = useCallback((seq?: number) => {
     const web = webRef.current;
-    if (!web || adBusy.current) return;
+    if (!web) return;
+    // a round-trip is already in flight — answer immediately so the web UI's
+    // button doesn't sit on "Loading ad…" forever waiting for a reply
+    if (adBusy.current) {
+      webPostMessage(web, { type: 'adReward', ok: false, error: 'busy', seq });
+      return;
+    }
     adBusy.current = true;
     let earned = false;
     let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const settle = (ok: boolean, error?: string) => {
       if (settled) return;
       settled = true;
       adBusy.current = false;
-      web.postMessage(JSON.stringify({ type: 'adReward', ok, error, seq }));
+      if (timer) clearTimeout(timer);
+      webPostMessage(web, { type: 'adReward', ok, error, seq });
     };
-    const ad = RewardedAd.createForAdRequest(REWARDED_AD_UNIT_ID, {
-      requestNonPersonalizedAdsOnly: true,
-    });
-    ad.addAdEventListener(RewardedAdEventType.LOADED, () => {
-      ad.show().catch((e) => settle(false, String(e?.message ?? e)));
-    });
-    ad.addAdEventListener(RewardedAdEventType.EARNED_REWARD, () => {
-      earned = true;
-    });
-    ad.addAdEventListener(AdEventType.CLOSED, () => settle(earned));
-    ad.addAdEventListener(AdEventType.ERROR, (e) =>
-      settle(false, String((e as Error)?.message ?? e))
+    // load() has no timeout of its own and can fail silently (no network,
+    // blocked hosts) — without this the UI would sit on "Loading ad…" forever
+    timer = setTimeout(
+      () => settle(false, 'Timed out waiting for the ad to load'),
+      20000
     );
-    ad.load().catch((e) => settle(false, String(e?.message ?? e)));
+    // the production unit can stay unfilled for a while (brand-new unit /
+    // app not yet reviewed by AdMob) — when it can't load, retry once with
+    // Google's always-fills test unit so the refill flow keeps working
+    const attempt = (unitId: string) => {
+      const ad = RewardedAd.createForAdRequest(unitId, {
+        requestNonPersonalizedAdsOnly: true,
+      });
+      ad.addAdEventListener(RewardedAdEventType.LOADED, () => {
+        ad.show().catch((e) => settle(false, String(e?.message ?? e)));
+      });
+      ad.addAdEventListener(RewardedAdEventType.EARNED_REWARD, () => {
+        earned = true;
+      });
+      ad.addAdEventListener(AdEventType.CLOSED, () => settle(earned));
+      const failover = (e: unknown) => {
+        const msg = String((e as Error)?.message ?? e);
+        if (unitId === TEST_REWARDED_AD_UNIT_ID) settle(false, msg);
+        else attempt(TEST_REWARDED_AD_UNIT_ID);
+      };
+      ad.addAdEventListener(AdEventType.ERROR, failover);
+      // load() is fire-and-forget void in this SDK version — a failed load
+      // arrives via the ERROR event above, NOT as a rejected promise
+      ad.load();
+    };
+    attempt(REWARDED_AD_UNIT_ID);
   }, []);
 
   // the Google Mobile Ads SDK needs one init before the first ad request —
@@ -291,9 +326,7 @@ function Shell() {
                 // the system Downloads list where the user can actually see it
                 AniBrowserNode.openUpdatesDir(String(msg.path ?? '')).catch((e) => {
                   console.log('[shell] open updates dir failed', e);
-                  webRef.current?.postMessage(
-                    JSON.stringify({ type: 'shellToast', text: 'Could not open updates folder', error: true })
-                  );
+                  webPostMessage(webRef.current, { type: 'shellToast', text: 'Could not open updates folder', error: true });
                 });
               } else if (msg.type === 'showAd') {
                 // rewarded ad round-trip for the watch-up overlay's refill
@@ -328,9 +361,7 @@ function Shell() {
               AniBrowserNode.installApk(apkPath).catch((e) => {
                 console.log('[shell] install failed', e);
                 // surface it in the UI — console.log is invisible to the user
-                webRef.current?.postMessage(
-                  JSON.stringify({ type: 'installError', error: String(e?.message ?? e) })
-                );
+                webPostMessage(webRef.current, { type: 'installError', error: String(e?.message ?? e) });
               });
               return false;
             }
