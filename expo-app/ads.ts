@@ -6,3 +6,8 @@
 //   expo-app/app.json under react-native-google-mobile-ads.
 export const REWARDED_AD_UNIT_ID =
   'ca-app-pub-5189960264785396/7699769490'; // AniNinja watch refill (rewarded)
+
+// Google's public test rewarded unit — always fills, pays nothing. Tried as a
+// fallback when the production unit can't load (brand-new unit / app not yet
+// reviewed by AdMob), so the refill flow keeps working while fill is flaky.
+export const TEST_REWARDED_AD_UNIT_ID = 'ca-app-pub-3940256099942544/5224354917';
