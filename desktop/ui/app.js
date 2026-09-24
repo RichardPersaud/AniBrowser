@@ -2176,19 +2176,53 @@ function watchTick() {
   updateWatchBadge();
 }
 
-$('watchResetBtn').addEventListener('click', () => {
+// refill the daily budget in place — used by the free reset (desktop) and the
+// rewarded-ad path (Android); unlimited refills, each one restores 45:00
+function resetWatchBudget() {
   state.watchUsed = 0;
   state.watchDate = todayKey();
   state.watchPersistNow = true;
   persistWatch();
   $('watchUpOverlay').hidden = true;
   updateWatchBadge();
-  toast('Timer reset — 45:00 of watch time back');
   const video = $('video');
   if (videoActive()) video.play().catch(() => {});
+}
+
+// desktop has no AdMob SDK — the reset stays free; Android earns it by
+// watching a rewarded ad (see the watchAdBtn handler below)
+if (!IS_ANDROID) {
+  $('watchResetBtn').addEventListener('click', () => {
+    resetWatchBudget();
+    toast('Timer reset — 45:00 of watch time back');
+  });
+  $('watchResetBtn').hidden = false;
+} else {
+  $('watchAdBtn').hidden = false;
+  $('watchUpText').textContent =
+    "You've used all 45 minutes of watch time for today. Watch a short ad to refill them, or exit the player — tomorrow brings a fresh 45 minutes.";
+}
+
+// rewarded ad refill: hand off to the Expo shell, which loads/shows a Google
+// rewarded ad and answers with an 'adReward' message (handled in the shell
+// message listener at the bottom of this file)
+let adRequestSeq = 0; // ignores stale replies after a retry
+$('watchAdBtn').addEventListener('click', () => {
+  if (IS_ANDROID && window.ReactNativeWebView) {
+    const btn = $('watchAdBtn');
+    const seq = ++adRequestSeq;
+    btn.disabled = true;
+    btn.textContent = 'Loading ad…';
+    window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'showAd', seq }));
+  }
 });
-$('watchCloseBtn').addEventListener('click', () => {
-  $('watchUpOverlay').hidden = true;
+
+// "Exit" leaves the player for the show's detail page — same trail the
+// player's Back button unwinds
+$('watchExitBtn').addEventListener('click', () => {
+  stopPlayback();
+  showView('detailView');
+  renderEpisodes();
 });
 
 // video lives for the whole app session, so these wire up once — not per episode
@@ -2902,6 +2936,20 @@ window.addEventListener('message', (ev) => {
       toast('Install failed: ' + (msg.error || 'unknown error'), true);
     } else if (msg && msg.type === 'shellToast') {
       toast(String(msg.text || ''), !!msg.error);
+    } else if (msg && msg.type === 'adReward') {
+      // the shell's answer to a rewarded-ad request (watch-up overlay refill);
+      // stale replies (an older request that settled after a retry) are
+      // dropped BEFORE touching the button — a newer request owns it now
+      if (msg.seq && msg.seq !== adRequestSeq) return;
+      const btn = $('watchAdBtn');
+      btn.disabled = false;
+      btn.textContent = 'Watch ad — +45 min';
+      if (msg.ok) {
+        resetWatchBudget();
+        toast('Ad reward — 45:00 of watch time back');
+      } else if (!$('watchUpOverlay').hidden) {
+        toast(msg.error ? 'Ad failed to load — try again' : 'Ad closed early — no reward', true);
+      }
     }
   } catch { /* non-JSON — ignore */ }
 });

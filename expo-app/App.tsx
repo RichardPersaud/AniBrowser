@@ -16,6 +16,13 @@ import * as WebBrowser from 'expo-web-browser';
 import * as ScreenOrientation from 'expo-screen-orientation';
 import { File, Paths } from 'expo-file-system';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
+import {
+  AdEventType,
+  MobileAds,
+  RewardedAd,
+  RewardedAdEventType,
+} from 'react-native-google-mobile-ads';
+import { REWARDED_AD_UNIT_ID } from './ads';
 import AniBrowserNode from './modules/anibrowser-node';
 
 // single zip asset containing the whole node runtime (server + scraper + ui)
@@ -128,6 +135,49 @@ function Shell() {
   }, []);
 
   useEffect(() => { boot(); }, [boot]);
+
+  // ---- AdMob rewarded ads ----
+  // The web UI's "+45 minutes" button asks via {type:'showAd'}; this loads a
+  // rewarded ad, shows it fullscreen, and reports the outcome back:
+  //   {type:'adReward', ok:true}  — the reward was earned
+  //   {type:'adReward', ok:false} — dismissed early / failed (error field set)
+  // The ad object is single-use, so a fresh one is built per request; only
+  // one ad round-trip may be in flight at a time.
+  const adBusy = useRef(false);
+  const showRewardedAd = useCallback((seq?: number) => {
+    const web = webRef.current;
+    if (!web || adBusy.current) return;
+    adBusy.current = true;
+    let earned = false;
+    let settled = false;
+    const settle = (ok: boolean, error?: string) => {
+      if (settled) return;
+      settled = true;
+      adBusy.current = false;
+      web.postMessage(JSON.stringify({ type: 'adReward', ok, error, seq }));
+    };
+    const ad = RewardedAd.createForAdRequest(REWARDED_AD_UNIT_ID, {
+      requestNonPersonalizedAdsOnly: true,
+    });
+    ad.addAdEventListener(RewardedAdEventType.LOADED, () => {
+      ad.show().catch((e) => settle(false, String(e?.message ?? e)));
+    });
+    ad.addAdEventListener(RewardedAdEventType.EARNED_REWARD, () => {
+      earned = true;
+    });
+    ad.addAdEventListener(AdEventType.CLOSED, () => settle(earned));
+    ad.addAdEventListener(AdEventType.ERROR, (e) =>
+      settle(false, String((e as Error)?.message ?? e))
+    );
+    ad.load().catch((e) => settle(false, String(e?.message ?? e)));
+  }, []);
+
+  // the Google Mobile Ads SDK needs one init before the first ad request —
+  // fire-and-forget at shell boot so the first "+45 minutes" tap is instant
+  // (initialize() is typed void but returns a promise at runtime)
+  useEffect(() => {
+    (MobileAds().initialize() as unknown as Promise<void>).catch(() => {});
+  }, []);
 
   // failsafe: if the UI never reports ready (stuck network, TOS edge case),
   // drop the cover anyway so the user is never trapped behind it
@@ -245,6 +295,10 @@ function Shell() {
                     JSON.stringify({ type: 'shellToast', text: 'Could not open updates folder', error: true })
                   );
                 });
+              } else if (msg.type === 'showAd') {
+                // rewarded ad round-trip for the watch-up overlay's refill
+                // button — outcome comes back as an 'adReward' message
+                showRewardedAd(typeof msg.seq === 'number' ? msg.seq : undefined);
               } else if (msg.type === 'openExternal') {
                 // cloud sign-in: Google OAuth (and its loopback callback) must
                 // run outside this WebView — Google rejects OAuth in embedded

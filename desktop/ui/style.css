@@ -1234,7 +1234,7 @@ h2 { font-size: 16px; margin: 18px 0 12px; color: var(--muted); font-weight: 600
 #watchUpPanel h2 { margin: 0 0 8px; font-size: 18px; }
 #watchUpPanel p { color: var(--muted); font-size: 14px; margin: 0; }
 #watchUpActions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px; }
-#watchCloseBtn {
+#watchExitBtn {
   background: transparent;
   color: var(--text);
   border: 1px solid var(--border);
@@ -1243,18 +1243,10 @@ h2 { font-size: 16px; margin: 18px 0 12px; color: var(--muted); font-weight: 600
   font-size: 13px;
   cursor: pointer;
 }
-#watchCloseBtn:hover { border-color: var(--accent); color: var(--accent); }
-#watchResetBtn {
-  background: var(--accent);
-  color: #06231f;
-  border: 1px solid transparent;
-  border-radius: 999px;
-  padding: 8px 18px;
-  font-weight: 700;
-  font-size: 13px;
-  cursor: pointer;
-}
+#watchExitBtn:hover { border-color: var(--accent); color: var(--accent); }
+#watchAdBtn,
 #watchResetBtn:hover { background: var(--accent-dim); }
+#watchAdBtn:disabled { opacity: 0.6; cursor: wait; }
 
 /* ---- system picture-in-picture ----
    The shell restores the full player and sets body.pip-full right before the

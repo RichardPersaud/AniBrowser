@@ -2,7 +2,7 @@
   "expo": {
     "name": "AniNinja",
     "slug": "anibrowser",
-    "version": "1.2.4",
+    "version": "1.2.5",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
@@ -11,7 +11,7 @@
     },
     "android": {
       "package": "io.local.anibrowser",
-      "versionCode": 11,
+      "versionCode": 12,
       "usesCleartextTraffic": true,
       "adaptiveIcon": {
         "backgroundColor": "#000000",
@@ -27,5 +27,8 @@
     "plugins": [
       "expo-web-browser"
     ]
+  },
+  "react-native-google-mobile-ads": {
+    "android_app_id": "ca-app-pub-5189960264785396~3347386431"
   }
 }
