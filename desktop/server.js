@@ -468,13 +468,17 @@ async function route(req, res) {
   }
 
   if (p === '/api/episodes') {
-    const eps = await scraper.episodes(q.get('slug') || '');
+    const slug = q.get('slug') || '';
+    const eps = await scraper.episodes(slug);
+    // which audio tracks the show really has (from the first episode's server
+    // list) — null when unknown, and the UI falls back to the detail counts
+    const audio = await scraper.audioTracks(slug);
     // flag episodes known to be unresolvable (all embeds dead) so the UI can
     // mark them in the list instead of a certain failure on click
     for (const ep of eps) {
       if (scraper.isDeadEp(ep.epId)) ep.dead = true;
     }
-    return sendJson(res, 200, { episodes: eps });
+    return sendJson(res, 200, { episodes: eps, audio });
   }
 
   if (p === '/api/epcounts' && req.method === 'POST') {
@@ -580,6 +584,19 @@ async function route(req, res) {
       return sendJson(res, 400, { error: 'id and value (-1, 0 or 1) are required' });
     }
     await cloudMod().setVote(b.id, value);
+    return sendJson(res, 200, { ok: true });
+  }
+  if (p === '/api/feedback/delete' && req.method === 'POST') {
+    const b = await readJsonBody(req);
+    if (!b.id) return sendJson(res, 400, { error: 'id is required' });
+    // ownership: only the author's own rows are deletable (the Supabase
+    // delete policy enforces the same rule — this just reports it cleanly)
+    const row = (await cloudMod().listFeedback()).find((r) => String(r.id) === String(b.id));
+    if (!row) return sendJson(res, 404, { error: 'Feedback not found' });
+    if (row.user_id !== cloudMod().userId()) {
+      return sendJson(res, 403, { error: 'You can only delete your own feedback' });
+    }
+    await cloudMod().deleteFeedback(b.id);
     return sendJson(res, 200, { ok: true });
   }
 

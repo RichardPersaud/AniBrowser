@@ -471,6 +471,19 @@ async function addFeedback({ title, body, authorName }) {
   return (r.json && r.json[0]) || null;
 }
 
+// Removes one of the caller's own feedback rows. RLS (feedback_delete:
+// auth.uid() = user_id) is the real authorization; the user_id filter makes
+// a foreign id a silent no-op even without it.
+async function deleteFeedback(feedbackId) {
+  const token = await getAccessToken();
+  if (!token) throw new Error(lastError || 'not signed in');
+  const d = await reqJson('DELETE',
+    `${apiBase()}/rest/v1/feedback?id=eq.${encodeURIComponent(feedbackId)}&user_id=eq.${session.user.id}`, {
+    headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${token}` },
+  });
+  if (d.status >= 400) throw new Error(`feedback delete ${d.status}`);
+}
+
 // value 1 / -1 upserts the caller's single vote row; 0 deletes it.
 async function setVote(feedbackId, value) {
   const token = await getAccessToken();
@@ -493,6 +506,18 @@ async function setVote(feedbackId, value) {
     body: { feedback_id: feedbackId, user_id: session.user.id, value },
   });
   if (u.status >= 400) throw new Error(`feedback vote ${u.status}`);
+}
+
+// Raw node network errors (getaddrinfo ENOTFOUND qsyquiaqfxhokjwlxwtg…,
+// ECONNREFUSED, timed out) read like a stack trace on the profile page —
+// surface one clean line instead. Anything else (e.g. "Session expired —
+// sign in again") is already human-readable and passes through.
+function friendlyError(e) {
+  if (!e) return null;
+  if (/ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|timed out|fetch failed/i.test(e)) {
+    return "Can't reach the sync server";
+  }
+  return e;
 }
 
 // One serialized sync step: pull-merge locally, then push the merged state.
@@ -548,7 +573,7 @@ function status() {
     picture: session?.user?.picture || null,
     pictureLocal: avatar ? '/avatar' : null,
     lastSync,
-    lastError,
+    lastError: friendlyError(lastError),
     syncing,
     dataRev,
     portAvailable: portIsFixed,
@@ -704,6 +729,7 @@ module.exports = {
   syncNow,
   listFeedback,
   addFeedback,
+  deleteFeedback,
   setVote,
   userId,
   handleCallback,
