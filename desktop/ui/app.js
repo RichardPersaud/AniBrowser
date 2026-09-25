@@ -3004,6 +3004,14 @@ $('exportBtn').addEventListener('click', async () => {
   }
 });
 
+/* ---- settings: legal pages (hosted on GitHub Pages) ----
+   openExternal routes to a Custom Tab on Android and the OS browser on
+   desktop — the WebView/Electron window itself must never navigate away */
+$('privacyLinkBtn').addEventListener('click', () =>
+  openExternal('https://richardpersaud.github.io/AniBrowser/privacy.html'));
+$('termsLinkBtn').addEventListener('click', () =>
+  openExternal('https://richardpersaud.github.io/AniBrowser/terms.html'));
+
 /* ---- synopsis clamp toggle ---- */
 $('synopsisToggle').addEventListener('click', () => {
   const clamped = $('detailSynopsis').classList.toggle('clamped');
