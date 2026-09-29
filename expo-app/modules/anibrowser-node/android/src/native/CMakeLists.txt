@@ -5,6 +5,10 @@
 cmake_minimum_required(VERSION 3.22)
 project(anibrowser CXX)
 
+# Node 24's public headers (v8 cppgc) use C++20 concepts/requires
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
 add_library(anibrowser SHARED ${CMAKE_SOURCE_DIR}/native-lib.cpp)
 
 include_directories(${CMAKE_SOURCE_DIR}/include-node)
