@@ -33,12 +33,18 @@ const RECENT_TTL = 5 * 60 * 1000;
 let recent = null; // { t, results }
 const UPCOMING_TTL = 30 * 60 * 1000;
 let upcoming = null; // { t, page, results }
+const SPOTLIGHT_TTL = 30 * 60 * 1000;
+let spotlight = null; // { t, results } — home hero carousel
+const SCHED_TTL = 10 * 60 * 1000;
+let sched = null; // { t, date, tz, items } — airing-schedule page
 const MIME = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
   '.ico': 'image/x-icon',
 };
 
@@ -226,7 +232,7 @@ async function handleStream(req, res, q) {
 
   let up;
   try {
-    up = await openSegment(target, headers, ctrl);
+    up = await openWithRetry(target, headers, ctrl);
   } catch (e) {
     if (e && (e.name === 'AbortError' || e.code === 'ABORT_ERR')) return; // client vanished mid-request
     throw e;
@@ -272,7 +278,53 @@ const freshAgents = {
   'https:': new https.Agent({ keepAlive: false }),
 };
 
-function openSegment(target, headers, ctrl, depth = 0) {
+// Upstream CDNs flake: the same manifest/segment URL that 500s or hangs once
+// usually succeeds on a second try. Without retries here, one bad response
+// becomes a fatal hls.js networkError and the app hops servers — the "buffer
+// loop" (re-resolve sources, re-buffer, fail, hop, repeat). A client abort
+// still bails immediately: nobody is left to deliver the retry to.
+async function openWithRetry(target, headers, ctrl) {
+  let lastErr = null;
+  for (let i = 0; i < 3; i++) {
+    if (ctrl.signal.aborted) {
+      const err = new Error('client went away');
+      err.name = 'AbortError';
+      throw err;
+    }
+    try {
+      const up = await openSegment(target, headers, ctrl);
+      if (up.status < 500) return up;
+      lastErr = new Error(`upstream ${up.status}`);
+      if (up.res) up.res.resume(); // drain so the socket isn't left hanging
+    } catch (e) {
+      if (e && (e.name === 'AbortError' || e.code === 'ABORT_ERR')) throw e;
+      lastErr = e;
+    }
+    await new Promise((r) => setTimeout(r, 600 * (i + 1)));
+  }
+  throw lastErr;
+}
+
+// Some stream CDNs (hls.aniwatch.al) ship an incomplete certificate chain —
+// Node rejects it with "unable to verify the first certificate", the proxy
+// answers 500 and every fragment load fails forever. A media proxy carries no
+// credentials, so after strict verification fails we retry that request once
+// through a relaxed agent; everything still verifies normally first.
+const insecureAgents = {
+  'http:': freshAgents['http:'],
+  'https:': new https.Agent({ keepAlive: false, rejectUnauthorized: false }),
+};
+const CERT_ERRORS = new Set([
+  'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+  'SELF_SIGNED_CERT_IN_CHAIN',
+  'DEPTH_ZERO_SELF_SIGNED_CERT',
+  'UNABLE_TO_GET_ISSUER_CERT',
+  'UNABLE_TO_GET_ISSUER_CERT_LOCALLY',
+  'CERT_HAS_EXPIRED',
+  'ERR_TLS_CERT_ALTNAME_INVALID',
+]);
+
+function openSegment(target, headers, ctrl, depth = 0, insecure = false) {
   return new Promise((resolve, reject) => {
     if (depth > 4) return reject(new Error('too many redirects'));
     let u;
@@ -281,7 +333,7 @@ function openSegment(target, headers, ctrl, depth = 0) {
     } catch {
       return reject(new Error('Bad target'));
     }
-    const agent = freshAgents[u.protocol];
+    const agent = (insecure ? insecureAgents : freshAgents)[u.protocol];
     if (!agent) return reject(new Error('Bad protocol: ' + u.protocol));
     const mod = u.protocol === 'https:' ? https : http;
     const req = mod.request(u, { agent, method: 'GET', headers });
@@ -295,12 +347,20 @@ function openSegment(target, headers, ctrl, depth = 0) {
       const loc = r.headers.location;
       if (loc && [301, 302, 303, 307, 308].includes(r.statusCode)) {
         r.resume(); // discard the redirect body
-        resolve(openSegment(new URL(loc, u).href, headers, ctrl, depth + 1));
+        resolve(openSegment(new URL(loc, u).href, headers, ctrl, depth + 1, insecure));
         return;
       }
       resolve({ status: r.statusCode || 502, headers: r.headers, res: r, url: u.href });
     });
-    req.on('error', reject);
+    req.on('error', (e) => {
+      // broken CDN chain: one relaxed-TLS attempt before giving up (strict
+      // verification already ran and failed — see insecureAgents above)
+      if (!insecure && CERT_ERRORS.has(e.code)) {
+        resolve(openSegment(target, headers, ctrl, depth, true));
+        return;
+      }
+      reject(e);
+    });
     req.end();
   });
 }
@@ -358,6 +418,41 @@ async function route(req, res) {
       upcoming = { t: now, page, results: await scraper.upcoming(page) };
     }
     return sendJson(res, 200, { results: upcoming.results });
+  }
+
+  if (p === '/api/spotlight') {
+    // hero carousel: the homepage's featured shows (banner art + stats +
+    // synopsis), one fetch per TTL
+    const now = Date.now();
+    if (!spotlight || now - spotlight.t > SPOTLIGHT_TTL) {
+      spotlight = { t: now, results: await scraper.spotlight() };
+    }
+    return sendJson(res, 200, { results: spotlight.results });
+  }
+
+  if (p === '/api/schedule') {
+    // airing schedule for one day: the widget fragment (title / time / next
+    // episode) enriched with each show's poster + stats from details() — the
+    // same call warms the detail cache, so opening a card later is instant
+    const date = q.get('date') || '';
+    const tz = parseInt(q.get('tz') || '0', 10) || 0;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return sendJson(res, 400, { error: 'bad date' });
+    const now = Date.now();
+    if (!sched || sched.date !== date || sched.tz !== tz || now - sched.t > SCHED_TTL) {
+      const items = await scraper.scheduleDay(date, tz);
+      await Promise.all(items.map(async (it) => {
+        try {
+          const d = await scraper.details(it.slug);
+          it.poster = d.poster;
+          it.synopsis = d.synopsis;
+          it.type = d.type;
+          it.year = ((d.aired || '').match(/\b(19|20)\d{2}\b/) || [])[0] || null;
+          it.malScore = d.malScore;
+        } catch { /* enrichment is best-effort — the raw row still shows */ }
+      }));
+      sched = { t: Date.now(), date, tz, items };
+    }
+    return sendJson(res, 200, { items: sched.items });
   }
 
   if (p === '/api/collection') {
@@ -500,13 +595,15 @@ async function route(req, res) {
     const slug = q.get('slug') || '';
     const ep = q.get('ep') || '';
     const type = q.get('type') === 'dub' ? 'dub' : 'sub';
-    console.log(`[api] sources slug=${slug} ep=${ep} type=${type}`);
+    // optional named-server request from the player's server dropdown
+    const server = (/^[A-Za-z0-9_-]{1,30}$/.test(q.get('server') || '') && q.get('server')) || undefined;
+    console.log(`[api] sources slug=${slug} ep=${ep} type=${type}${server ? ` server=${server}` : ''}`);
     const t0 = Date.now();
     try {
       // hard bound: never let the renderer wait forever
       let timeoutId;
       const src = await Promise.race([
-        scraper.getSources(slug, ep, type),
+        scraper.getSources(slug, ep, type, server),
         new Promise((_, rej) => {
           timeoutId = setTimeout(
             () => rej(new Error('Timed out resolving sources')),
@@ -541,6 +638,15 @@ async function route(req, res) {
   if (p === '/api/auth/start') {
     const r = await cloudMod().startSignIn();
     return sendJson(res, r.ok ? 200 : (r.error && r.error.startsWith('Sign-in port') ? 409 : 400), r);
+  }
+  // native Android account picker: the Expo shell yields a Google ID token
+  // (no browser tab); never gated on the loopback port — this grant doesn't use it
+  if (p === '/api/auth/google' && req.method === 'POST') {
+    const b = await readJsonBody(req);
+    const token = String(b.idToken || '').trim();
+    if (!token) return sendJson(res, 400, { error: 'idToken is required' });
+    const r = await cloudMod().signInWithIdToken(token);
+    return sendJson(res, r.ok ? 200 : 401, r);
   }
   if (p === '/api/auth/status') {
     return sendJson(res, 200, cloudMod().status());

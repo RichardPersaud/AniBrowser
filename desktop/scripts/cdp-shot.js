@@ -17,7 +17,9 @@ async function main() {
   const [sel, out, idx] = process.argv.slice(2);
   const index = parseInt(idx || '0', 10) || 0;
   const targets = await getJSON('/json');
-  const page = targets.find((t) => t.type === 'page');
+  // the app page lives on the loopback node server; AdMob webviews load
+  // doubleclick pages that also show up as type "page"
+  const page = targets.find((t) => t.type === 'page' && /48115/.test(t.url));
   const WebSocket = require('ws');
   const ws = new WebSocket(page.webSocketDebuggerUrl, { perMessageDeflate: false });
   let id = 0;
