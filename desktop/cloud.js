@@ -28,6 +28,11 @@ const PENDING_TTL = 10 * 60 * 1000;       // sign-in attempt expires
 const PUSH_DEBOUNCE = 3000;               // coalesce the 5s progress saves + 1.5s UI debounce
 const BACKOFFS = [60e3, 5 * 60e3, 30 * 60 * 1000]; // network failure backoff ladder
 const TOMBSTONE_TTL = 30 * 24 * 3600 * 1000; // deletes forget after 30 days
+// Admin account — the developer. The shell serves this account Google's
+// always-fills TEST ad unit instead of the production one, so a stray click
+// can't generate accidental impressions/clicks on the real unit (an AdMob
+// policy risk). Matched case-insensitively against the signed-in email.
+const ADMIN_EMAIL = 'richardpersaud2010@gmail.com';
 
 const configured = !!(SUPABASE_URL && SUPABASE_ANON_KEY);
 const apiBase = () => SUPABASE_URL.replace(/\/+$/, '');
@@ -332,6 +337,56 @@ async function exchangeCode(code, state) {
   return { ok: true, email: session.user.email, name: session.user.name };
 }
 
+// Sign in from the native Android account picker: the Expo shell's Credential
+// Manager popup yields a Google ID token (no browser tab involved), and this
+// exchanges it via Supabase's id_token grant. The audience of that token must
+// equal the Google client ID configured in the Supabase dashboard — which is
+// also the GOOGLE_WEB_CLIENT_ID constant hardcoded in the Expo module
+// (expo-app/modules/anibrowser-node/.../AniBrowserNodeModule.kt).
+async function signInWithIdToken(idToken) {
+  if (!configured) return { ok: false, error: 'Supabase is not configured in cloud.js' };
+  // no nonce — GoTrue enforces both-or-neither (nonce param AND nonce claim, or
+  // neither), and the Credential Manager token carries no claim
+  const r = await reqJson('POST', `${apiBase()}/auth/v1/token?grant_type=id_token`, {
+    headers: { apikey: SUPABASE_ANON_KEY },
+    // the JWT rides under "id_token" (as auth-js's signInWithIdToken does),
+    // NOT "token" — GoTrue rejects that with "id_token required"
+    body: { provider: 'google', id_token: idToken },
+  }, 30000);
+  // a 200 without a refresh token would sign in once and then fail at the next
+  // relaunch (loadAuthState only restores sessions that carry one) — treat as failure
+  if (r.status !== 200 || !r.json?.access_token || !r.json?.refresh_token) {
+    // GoTrue token errors come back OAuth-style: {error, error_description}
+    // (older builds use {msg}) — surface the description, not just the status
+    const body = r.json || {};
+    const detail = body.error_description || body.msg || body.error || body.message || '';
+    console.error('[cloud] id_token grant failed', r.status, detail || '(no detail)');
+    lastError =
+      /unacceptable audience|audience/i.test(detail) ? 'Google sign-in not configured for this app (client ID mismatch)'
+      : /nonce/i.test(detail) ? 'Google sign-in rejected — try the browser sign-in instead'
+      : detail ? `Google sign-in failed: ${String(detail).slice(0, 160)}`
+      : `Google sign-in failed (${r.status})`;
+    return { ok: false, error: lastError };
+  }
+  session = {
+    access_token: r.json.access_token,
+    refresh_token: r.json.refresh_token,
+    expires_at: Date.now() + (r.json.expires_in || 3600) * 1000,
+    user: {
+      id: r.json.user?.id,
+      email: r.json.user?.email,
+      name: r.json.user?.user_metadata?.name || r.json.user?.email,
+      picture: r.json.user?.user_metadata?.avatar_url || r.json.user?.user_metadata?.picture || null,
+    },
+  };
+  await saveAuthState().catch(() => {});
+  saveAvatarIfChanged(); // async — first download of the profile photo
+  lastError = null;
+  backoffStep = 0;
+  syncNow(); // first pull+push with the new account
+  return { ok: true, email: session.user.email, name: session.user.name };
+}
+
 // ---- merge rules (pure functions) ------------------------------------------
 // favorites/progress are dicts keyed by slug, every entry carries `ts`.
 // Newer ts wins per key; a tombstone newer than an entry keeps it deleted.
@@ -574,6 +629,7 @@ function status() {
     pictureLocal: avatar ? '/avatar' : null,
     lastSync,
     lastError: friendlyError(lastError),
+    isAdmin: !!session && String(session?.user?.email || '').trim().toLowerCase() === ADMIN_EMAIL,
     syncing,
     dataRev,
     portAvailable: portIsFixed,
@@ -723,6 +779,7 @@ module.exports = {
   init,
   startSignIn,
   exchangeCode,
+  signInWithIdToken,
   signOut,
   status,
   onLocalDataChanged,

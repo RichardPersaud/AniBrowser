@@ -11,6 +11,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
+import android.os.CancellationSignal
 import android.os.Environment
 import android.provider.MediaStore
 import android.provider.Settings
@@ -20,6 +21,18 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
+import androidx.credentials.CredentialManager
+import androidx.credentials.CredentialManagerCallback
+import androidx.credentials.CustomCredential
+import androidx.credentials.GetCredentialRequest
+import androidx.credentials.GetCredentialResponse
+import androidx.credentials.exceptions.GetCredentialCancellationException
+import androidx.credentials.exceptions.GetCredentialException
+import androidx.credentials.exceptions.GetCredentialInterruptedException
+import androidx.credentials.exceptions.GetCredentialProviderConfigurationException
+import androidx.credentials.exceptions.NoCredentialException
+import com.google.android.libraries.identity.googleid.GetGoogleIdOption
+import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
 import expo.modules.kotlin.Promise
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
@@ -30,6 +43,13 @@ import java.util.zip.ZipInputStream
 private const val TAG = "AniBrowser"
 private const val CHANNEL_FAVORITES = "favorites"
 private const val NOTIF_ID_FAVORITES = 1001
+
+// The Google OAuth *Web* client ID (Supabase dashboard → Authentication →
+// Providers → Google). Credential Manager issues the ID token with this
+// audience, and GoTrue rejects tokens whose audience doesn't match the
+// dashboard's client ID — these two MUST stay equal.
+private const val GOOGLE_WEB_CLIENT_ID =
+    "343407616274-008c5vmhl0qfkir46fe2tp6p7fvpt8a4.apps.googleusercontent.com"
 
 /**
  * Boots the bundled Node.js server (server.js + scraper.js + ui/) inside the
@@ -42,6 +62,9 @@ class AniBrowserNodeModule : Module() {
         @Volatile
         var videoActive: Boolean = false
     }
+
+    /** In-flight Credential Manager request — a new sign-in cancels the old one. */
+    private var googleSignInSignal: CancellationSignal? = null
 
     override fun definition() = ModuleDefinition {
         Name("AniBrowserNode")
@@ -64,11 +87,26 @@ class AniBrowserNodeModule : Module() {
                     marker.delete() // never read a previous run's port
                     extractProject(zip, projectDir)
 
+                    // Play distribution (-Pplay swaps in AndroidManifest-play.xml,
+                    // which drops REQUEST_INSTALL_PACKAGES): flag it to the node
+                    // server so the sideload self-updater stays dormant — Play
+                    // policy forbids in-app update flows. The shared zip serves
+                    // both variants; only the manifest differs.
+                    val playBuild = try {
+                        val ctx = appContext.reactContext
+                        val perms = ctx?.packageManager?.getPackageInfo(
+                            ctx.packageName, PackageManager.GET_PERMISSIONS
+                        )?.requestedPermissions
+                        perms != null && !perms.contains(Manifest.permission.REQUEST_INSTALL_PACKAGES)
+                    } catch (_: Exception) { false }
+                    if (playBuild) Log.i(TAG, "play build detected — in-app updater disabled")
+
                     NodeBridge().also { it.registerNodeDataDirPath(dataDir) }
                     Thread {
                         try {
                             NodeBridge().startNodeWithArguments(
-                                arrayOf("node", "${projectDir.absolutePath}/index.js"),
+                                arrayOf("node", "${projectDir.absolutePath}/index.js") +
+                                    (if (playBuild) arrayOf("--play") else emptyArray()),
                                 projectDir.absolutePath, true
                             )
                         } catch (t: Throwable) {
@@ -237,6 +275,104 @@ class AniBrowserNodeModule : Module() {
                     promise.reject("OPEN_DIR_FAILED", t.message ?: "could not open the updates folder", t)
                 }
             }.start()
+        }
+
+        // Native Google sign-in: the system account-chooser sheet (Credential
+        // Manager), no browser tab. The web UI posts {type:'googleSignIn', seq};
+        // App.tsx relays the result as {type:'googleIdToken', ok, token, seq} and
+        // the web UI exchanges it via POST /api/auth/google → cloud.signInWithIdToken.
+        // Every path below settles the promise — App.tsx always replies to the UI.
+        AsyncFunction("googleSignIn") { promise: Promise ->
+            val activity = appContext.currentActivity
+            if (activity == null) {
+                promise.reject("NO_ACTIVITY", "app is in the background — reopen it and try again", null)
+                return@AsyncFunction
+            }
+            activity.runOnUiThread {
+                googleSignInSignal?.cancel() // single-flight: newest request wins
+                var settled = false
+                val signal = CancellationSignal().also { googleSignInSignal = it }
+                fun settle(err: Boolean, code: String, msg: String, cause: Throwable? = null) {
+                    if (settled) return
+                    settled = true
+                    if (googleSignInSignal === signal) googleSignInSignal = null
+                    if (err) promise.reject(code, msg, cause) else promise.resolve(msg)
+                }
+                try {
+                    val option = GetGoogleIdOption.Builder()
+                        .setServerClientId(GOOGLE_WEB_CLIENT_ID)
+                        .setFilterByAuthorizedAccounts(false) // always the full chooser
+                        // autoSelectEnabled=false → even with a single remembered
+                        // account the sheet always appears; the user must tap an
+                        // account every time
+                        .setAutoSelectEnabled(false)
+                        .build()
+                    val request = GetCredentialRequest.Builder().addCredentialOption(option).build()
+                    CredentialManager.create(activity).getCredentialAsync(
+                        activity, request, signal,
+                        ContextCompat.getMainExecutor(activity),
+                        object : CredentialManagerCallback<GetCredentialResponse, GetCredentialException> {
+                            override fun onResult(result: GetCredentialResponse) {
+                                val c = result.credential
+                                if (c is CustomCredential &&
+                                    c.type == GoogleIdTokenCredential.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL
+                                ) {
+                                    try {
+                                        settle(false, "", GoogleIdTokenCredential.createFrom(c.data).idToken)
+                                    } catch (t: Throwable) {
+                                        settle(true, "PARSE", "unreadable Google credential", t)
+                                    }
+                                } else {
+                                    settle(true, "WRONG_TYPE", "unexpected credential type", null)
+                                }
+                            }
+
+                            override fun onError(e: GetCredentialException) {
+                                val (code, msg) = when (e) {
+                                    is GetCredentialCancellationException,
+                                    is GetCredentialInterruptedException ->
+                                        "CANCELLED" to "Google sign-in was dismissed"
+                                    is NoCredentialException ->
+                                        "NO_CREDENTIAL" to "no Google accounts available on this device"
+                                    is GetCredentialProviderConfigurationException ->
+                                        "NO_PROVIDER" to "Google Play services is missing or outdated"
+                                    else -> "FAILED" to (e.errorMessage?.toString() ?: "Google sign-in failed")
+                                }
+                                Log.w(TAG, "googleSignIn error: $code", e)
+                                settle(true, code, msg, e)
+                            }
+                        }
+                    )
+                } catch (t: Throwable) {
+                    Log.e(TAG, "googleSignIn failed", t)
+                    settle(true, "FAILED", t.message ?: "Google sign-in failed", t)
+                }
+            }
+        }
+
+        // NO_CREDENTIAL follow-up: the device has zero Google accounts, so open
+        // the system "add a Google account" screen. Launched in our task, it
+        // slides OVER the app — nothing is closed, and the back gesture returns
+        // straight to the app, where the web UI re-opens the account picker.
+        // Permission-free: Settings.ACTION_ADD_ACCOUNT_SETTINGS needs none.
+        AsyncFunction("addGoogleAccount") { promise: Promise ->
+            val activity = appContext.currentActivity
+            if (activity == null) {
+                promise.reject("NO_ACTIVITY", "app is in the background — reopen it and try again", null)
+                return@AsyncFunction
+            }
+            activity.runOnUiThread {
+                try {
+                    val intent = Intent(Settings.ACTION_ADD_ACCOUNT)
+                        // narrow Settings' account list to the Google flow
+                        .putExtra(Settings.EXTRA_ACCOUNT_TYPES, arrayOf("com.google"))
+                    activity.startActivity(intent)
+                    promise.resolve(true)
+                } catch (t: Throwable) {
+                    Log.e(TAG, "addGoogleAccount failed", t)
+                    promise.reject("FAILED", "could not open the account setup screen", t)
+                }
+            }
         }
     }
 

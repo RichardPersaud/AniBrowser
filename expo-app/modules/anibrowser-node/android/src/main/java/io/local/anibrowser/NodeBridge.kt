@@ -1,10 +1,10 @@
 package io.local.anibrowser
 
 /**
- * JNI bindings for the prebuilt nodejs-mobile runtime. The native symbols live
- * in libanibrowser.so (extracted from the released APK) and are named
- * Java_io_local_anibrowser_NodeBridge_* — so this class must keep this exact
- * package/name to stay bound.
+ * JNI bindings for the nodejs-mobile runtime. The native symbols live in
+ * libanibrowser.so (built from ../native/native-lib.cpp by scripts/build-shim.sh)
+ * and are named Java_io_local_anibrowser_NodeBridge_* — so this class must keep
+ * this exact package/name to stay bound.
  */
 class NodeBridge {
     companion object {

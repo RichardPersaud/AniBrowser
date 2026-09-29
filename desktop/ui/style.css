@@ -267,6 +267,7 @@ body {
 body.on-profile .round-btn:not([hidden]):not(#feedbackNavBtn) { display: inline-flex; }
 body.on-settings #backBtn:not([hidden]) { display: inline-flex; }
 body.on-settings #feedbackNavBtn { display: inline-flex; margin-left: auto; }  /* pin the bubble to the right edge */
+body.guest #feedbackNavBtn { display: none; }  /* board needs a Google session; guests can't reach it */
 body.on-profile #profileGearBtn { margin-left: auto; }   /* pin the gear to the right edge */
 body.on-profile #sidebarBtn,
 body.on-profile #brand,
@@ -985,11 +986,38 @@ h2 { font-size: 16px; margin: 18px 0 12px; color: var(--muted); font-weight: 600
   overflow: hidden;
 }
 #detailControls { margin-top: 18px; display: flex; align-items: center; gap: 14px; }
-#epCount { color: var(--muted); font-size: 13px; }
+.detail-metaline {
+  margin-top: 8px;
+  font-size: 13px;
+  letter-spacing: 0.02em;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* icon-only favorite/bookmark pill */
+.fav-pill {
+  margin-left: auto;
+  width: 38px;
+  height: 38px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  border-radius: 999px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.fav-pill:hover { color: var(--accent); border-color: var(--accent-dim); }
+.fav-pill.active { color: var(--accent); border-color: var(--accent); }
 
 /* ---- detail info (synopsis / stats) ----
-   Sits directly under the SUB/DUB toggle on desktop; on mobile it drops to a
-   full-width row (display:contents on #detailMeta unwraps it). */
+   Sits directly under the SUB/DUB toggle on desktop; on mobile #detailInfo
+   goes display:contents so #detailInfoBody (the synopsis card) drops to a
+   full-width row while #detailMetaRows is pulled out beside the poster. */
+#detailInfoBody { display: contents; }
 #detailInfo {
   margin-top: 14px;
   background: var(--bg2);
@@ -1081,27 +1109,132 @@ h2 { font-size: 16px; margin: 18px 0 12px; color: var(--muted); font-weight: 600
   color: #06231f;
 }
 
+/* ---- "//"-style section headers ---- */
+.h-slash { margin: 0; font-size: 13px; letter-spacing: 0.08em; color: var(--text); font-weight: 700; }
+.h-slash::before {
+  content: '//';
+  color: var(--accent);
+  font-weight: 700;
+  margin-right: 7px;
+}
+
+/* ---- detail tab row ---- */
+.detail-tabs {
+  display: flex;
+  gap: 4px;
+  margin: 6px 0 14px;
+  border-bottom: 1px solid var(--border);
+}
+.detail-tab {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 8px 10px 9px;
+  cursor: pointer;
+}
+.detail-tab::before {
+  content: '//';
+  color: var(--muted);
+  margin-right: 5px;
+  font-weight: 700;
+}
+.detail-tab:hover { color: var(--text); }
+.detail-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+.detail-tab.active::before { color: var(--accent); }
+.detail-panel { margin-top: 2px; }
+/* //DETAILS exists only while the content is mounted under the player —
+   on the detail page the info card stays inline under the title block */
+#detailTabs [data-tab="details"] { display: none; }
+#playerView.in-player #detailTabs [data-tab="details"] { display: block; }
+
+/* ---- episodes header row: "// N EPISODES" + FIND EP ---- */
+.ep-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 14px 0 10px;
+}
+.ep-find {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 5px 10px;
+  min-width: 150px;
+}
+.ep-find .icon { width: 14px; height: 14px; color: var(--muted); flex-shrink: 0; }
+.ep-find input {
+  background: none;
+  border: none;
+  outline: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  width: 90px;
+  padding: 0;
+}
+.ep-find:focus-within { border-color: var(--accent-dim); }
+.ep-find-clear {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0 2px;
+}
+.ep-find-clear:hover { color: var(--danger); }
+
+/* ---- audio-type pills with episode counts (SUB 1180 EP) ----
+   (the player's #swapToggle keeps the .segmented look above) */
+.audio-pills { display: flex; gap: 8px; margin: 0 0 14px; flex-wrap: wrap; }
+.audio-pills button {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  border-radius: 999px;
+  padding: 6px 14px;
+  cursor: pointer;
+  font-weight: 700;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+}
+.audio-pills button:hover { border-color: var(--accent-dim); color: var(--accent); }
+.audio-pills button.active { background: var(--accent); color: #06231f; border-color: var(--accent); }
+
 .ep-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(64px, 1fr));
-  gap: 8px;
+  grid-template-columns: repeat(auto-fill, minmax(88px, 1fr));
+  gap: 9px;
 }
 .ep-btn {
   background: var(--bg2);
   border: 1px solid var(--border);
   color: var(--text);
   border-radius: 8px;
-  padding: 6px 4px;
+  padding: 10px 4px 8px;
   cursor: pointer;
-  font-size: 12px;
   text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  align-items: center;
 }
+.ep-btn .ep-num { font-size: 15px; font-weight: 700; line-height: 1; }
+.ep-btn .ep-type { font-size: 9px; letter-spacing: 0.1em; color: var(--muted); font-weight: 600; }
 .ep-btn:hover { border-color: var(--accent); color: var(--accent); }
 .ep-btn.dead {
   opacity: 0.45;
   border-style: dotted;
-  text-decoration: line-through;
 }
+.ep-btn.dead .ep-num { text-decoration: line-through; }
 .ep-btn.watched {
   color: var(--muted);
   border-style: dashed;
@@ -1109,16 +1242,33 @@ h2 { font-size: 16px; margin: 18px 0 12px; color: var(--muted); font-weight: 600
   opacity: 0.75;
 }
 .ep-btn.watched:hover { color: var(--accent); opacity: 1; }
-.ep-btn.current { background: var(--accent); color: #06231f; font-weight: 700; }
+.ep-btn.current { background: var(--accent); border-color: var(--accent); color: #06231f; }
+.ep-btn.current .ep-type { color: #06231f; opacity: 0.75; }
+
+/* ---- seasons cards ---- */
+#panelSeasons .slider .card { width: 148px; }
+.season-badge {
+  position: absolute;
+  left: 6px;
+  bottom: 6px;
+  background: rgba(11, 14, 20, 0.85);
+  border: 1px solid var(--accent-dim);
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 600;
+  border-radius: 999px;
+  padding: 2px 7px;
+  pointer-events: none;
+}
 
 /* ---- player ----
-   Column layout: chrome on top, video centered in the space between,
-   controls on the bottom (orders keep the original DOM order intact —
-   the video is reparented to/from the mini player by JS). */
-#playerView { padding: 0; height: 100%; }
+   Column layout: chrome on top, video band, then the detail content slot
+   (mounted live while playing — the page scrolls in #main). Orders keep the
+   original DOM order intact — the video is reparented to/from the mini
+   player by JS. */
+#playerView { padding: 0; }
 #playerWrap {
   position: relative;
-  height: 100%;
   background: #000;
   display: flex;
   flex-direction: column;
@@ -1128,6 +1278,7 @@ h2 { font-size: 16px; margin: 18px 0 12px; color: var(--muted); font-weight: 600
   order: 2;
   flex: 1;
   min-height: 0;
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1163,7 +1314,7 @@ h2 { font-size: 16px; margin: 18px 0 12px; color: var(--muted); font-weight: 600
   flex-direction: column;
   gap: 6px;
   padding: 10px 16px 8px;
-  background: var(--bg1);
+  background: var(--bg2);
   border-bottom: 1px solid var(--border);
 }
 #playerHead { min-width: 0; }
@@ -1188,7 +1339,7 @@ h2 { font-size: 16px; margin: 18px 0 12px; color: var(--muted); font-weight: 600
   align-items: center;
   gap: 12px;
   padding: 10px 16px;
-  background: var(--bg1);
+  background: var(--bg2);
   border-top: 1px solid var(--border);
 }
 
@@ -1270,7 +1421,8 @@ body.pip-full #playerBottom {
   display: none !important;
 }
 #playerRight { display: flex; gap: 10px; align-items: center; margin-left: auto; }
-#qualitySel {
+#qualitySel,
+#serverSel {
   background: var(--bg3);
   color: var(--text);
   border: 1px solid var(--border);
@@ -1296,6 +1448,78 @@ body.pip-full #playerBottom {
   cursor: pointer;
 }
 .overlay-btn:hover { background: var(--accent); color: #06231f; }
+
+/* ---- player page: 16:9 band on top, the detail content below ----
+   While an episode plays, ensureDetailMounted() moves #detailMeta, the tab
+   row and the three detail panels into #playerDetailSlot (order 4) and marks
+   #playerView.in-player. Source-order rule: the :fullscreen / body.pip-full
+   blocks below must stay AFTER these .in-player rules (equal specificity). */
+#playerDetailSlot { order: 4; display: none; background: var(--bg); }
+#playerView.in-player #playerDetailSlot { display: block; padding: 12px 18px 28px; }
+#playerView.in-player #videoArea {
+  flex: none;
+  aspect-ratio: 16 / 9;
+  width: 100%;
+  max-height: 66vh;
+}
+#playerView.in-player #playerHead { display: none; } /* title sits below the video */
+#playerView.in-player #watchUpOverlay { position: fixed; } /* centre on the viewport */
+
+/* the audio/server/quality controls (moved into the slot from #playerTopRow)
+   sit between the title header and the tab row */
+#playerView.in-player #playerRight {
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  margin: 10px 0 14px;
+  gap: 8px;
+}
+/* the info card stays whole in the player's //DETAILS tab, even at phone
+   widths where the detail page would split body/list around the poster */
+#playerView.in-player #detailInfo {
+  display: block;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 18px;
+}
+#playerView.in-player #detailInfoBody { display: contents; }
+/* header in the slot: title on its own line, EP line + bookmark share one —
+   spacing tightened, the meta block breathes less than the detail page */
+#playerView.in-player #detailMeta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: 10px;
+}
+#playerView.in-player #detailTitle {
+  flex: 1 1 100%;
+  margin-top: 0;
+  margin-bottom: 2px;
+}
+#playerView.in-player #detailMetaLine { flex: 0 1 auto; margin: 0; min-width: 0; }
+#playerView.in-player #detailControls { flex: 0 0 auto; margin: 0; margin-left: auto; }
+#playerView.in-player .fav-pill { width: 34px; height: 34px; }
+
+/* fullscreen: the slot is page chrome — hide it, fill the screen with video */
+#playerWrap:fullscreen { height: 100%; }
+#playerWrap:fullscreen #playerDetailSlot { display: none !important; }
+#playerWrap:fullscreen #videoArea {
+  flex: 1 1 auto !important;
+  aspect-ratio: auto !important;
+  max-height: none !important;
+}
+#playerWrap:fullscreen #playerHead { display: block; }
+
+/* PiP mirror: same stripping as today, plus the detail slot */
+body.pip-full #playerDetailSlot { display: none !important; }
+body.pip-full #playerView,
+body.pip-full #playerWrap { height: 100% !important; }
+body.pip-full #videoArea {
+  flex: 1 1 auto !important;
+  aspect-ratio: auto !important;
+  max-height: none !important;
+}
 
 video::cue { background: rgba(0, 0, 0, 0.4); }
 
@@ -1330,6 +1554,14 @@ svg.icon {
   flex-shrink: 0;
 }
 .fav-btn.active svg.icon { fill: currentColor; } /* filled heart when favorited */
+/* multicolor Google brand mark — sized/placed like svg.icon but keeps the
+   paths' own fills (no stroke, no fill override) */
+svg.google {
+  width: 1.1em;
+  height: 1.1em;
+  vertical-align: -0.18em;
+  flex-shrink: 0;
+}
 .empty-icon svg {
   fill: none;
   stroke: currentColor;
@@ -1341,6 +1573,104 @@ svg.icon {
   opacity: 0.6;
 }
 .side-ico svg.icon { width: 16px; height: 16px; }
+
+/* ---- schedule (airing times) ---- */
+#scheduleView h2 { margin-bottom: 12px; }
+.sched-days {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 6px;
+  margin-bottom: 14px;
+  scrollbar-width: none;
+}
+.sched-days::-webkit-scrollbar { display: none; }
+.sched-day {
+  flex: 0 0 auto;
+  min-width: 64px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 10px 8px;
+  cursor: pointer;
+  color: var(--text);
+  font-family: inherit;
+  transition: border-color 0.15s ease;
+}
+.sched-day .sd-wd { font-size: 11px; letter-spacing: 0.08em; color: var(--muted); }
+.sched-day .sd-num { font-size: 20px; font-weight: 700; }
+.sched-day .sd-mon { font-size: 10px; color: var(--muted); }
+.sched-day:not(.active):hover { border-color: var(--accent-dim); }
+.sched-day.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #062a26;
+}
+.sched-day.active .sd-wd, .sched-day.active .sd-mon { color: rgba(6, 42, 38, 0.7); }
+.sched-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.sched-card {
+  display: flex;
+  gap: 12px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px;
+  cursor: pointer;
+  transition: border-color 0.15s ease;
+}
+.sched-card:hover { border-color: var(--accent-dim); }
+.sched-thumb {
+  position: relative;
+  width: 96px;
+  flex: none;
+  aspect-ratio: 2 / 3;
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--bg3);
+}
+.sched-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.sched-time-chip {
+  position: absolute;
+  bottom: 6px;
+  left: 6px;
+  background: var(--accent);
+  color: #062a26;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 999px;
+}
+.sched-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+}
+.sched-title { font-size: 15px; font-weight: 600; color: var(--text); }
+.sched-time { color: var(--accent); font-weight: 700; font-size: 13px; }
+.sched-meta { color: var(--muted); font-size: 12px; }
+.sched-syn {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.sched-go { align-self: center; flex: none; color: var(--accent); padding: 8px; }
+.sched-go .icon { width: 22px; height: 22px; }
+.sched-empty { color: var(--muted); font-size: 13px; padding: 18px 0; }
 
 /* ---- toast ---- */
 #toast {
@@ -1358,6 +1688,52 @@ svg.icon {
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
 }
 #toast.err { border-color: var(--danger); }
+
+/* ---- themed confirm dialog (replaces window.confirm) ---- */
+#confirmDlg {
+  position: fixed;
+  inset: 0;
+  z-index: 100;   /* above the drawer (80), mini player (85), below nothing */
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+#confirmDlg:not([hidden]) { animation: fadeUp 0.2s ease; }
+.dlg-card {
+  width: min(340px, 100%);
+  background: var(--bg3);   /* one step above the scrim-dimmed page */
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 18px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55);
+}
+.dlg-card h3 {
+  margin: 0 0 8px;
+  font-size: 15px;
+  color: var(--text);
+}
+.dlg-card p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+.dlg-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 18px;
+}
+.dlg-actions .pill-btn { padding: 7px 16px; font-size: 13px; }
+/* the destructive action is the one that gets emphasis: filled accent pill */
+.dlg-ok {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #062a26;
+}
+.dlg-ok:hover { background: var(--accent); color: #062a26; opacity: .9; }
 
 /* ---- upcoming marquee (Home, top strip) ----
    Each .up-item carries its own right margin (no flex gap) so the track's
@@ -1555,9 +1931,17 @@ button, select, .back-btn, .pill-btn {
 }
 #loginGate[hidden] { display: none; }
 #loginGate .login-logo {
-  width: 200px;
-  max-width: 60vw;
+  width: 250px;
+  max-width: 68vw;
   margin-bottom: 14px;
+  animation: login-pulse 2.2s ease-in-out infinite;
+}
+@keyframes login-pulse {
+  0%, 100% { transform: scale(1); filter: drop-shadow(0 0 0 rgba(37, 184, 160, 0)); }
+  50%      { transform: scale(1.06); filter: drop-shadow(0 0 18px rgba(37, 184, 160, 0.35)); }
+}
+@media (prefers-reduced-motion: reduce) {
+  #loginGate .login-logo { animation: none; }
 }
 #loginGate h2 { margin: 0 0 6px; }
 #loginGate .hint { max-width: 440px; }
@@ -1566,7 +1950,66 @@ button, select, .back-btn, .pill-btn {
   padding: 10px 26px;
   font-size: 14px;
 }
+#loginGate #loginGuestBtn { margin-top: 8px; font-size: 13px; }
 #loginGate #loginStatus { min-height: 1.4em; margin-top: 12px; }
+/* ---- login gate collage backdrop ----
+   Four marquee rows of blurred poster tiles panning in alternating
+   directions, tilted 40° as a plane (tiles built by app.js
+   buildLoginCollage, reusing @keyframes marquee). filter: blur() fades to
+   transparent at an element's own edges, so the tilted plane is oversized
+   well past the viewport (a rotated viewport-size layer would leave the
+   corners bare) and every row's blur-fade band is off-screen or under
+   another row's tiles. */
+#loginCollage {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  z-index: 0;
+  pointer-events: none;
+}
+#loginCollage .collage-tilt {
+  position: absolute;
+  inset: -40%;                   /* 1.8× the viewport — covers it at any rotation */
+  transform: rotate(40deg);
+  will-change: transform;        /* static layer; rotation is baked in */
+}
+#loginCollage .collage-row {
+  position: absolute;
+  left: -60px;                   /* oversize sideways: no blur fade at plane edges */
+  width: max-content;
+  height: 25%;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  filter: blur(5px) brightness(0.42) saturate(1.15);
+  will-change: transform;
+  animation: marquee 70s linear infinite;
+}
+#loginCollage .collage-row img {
+  flex: none;
+  height: 47vh;                  /* rows sit 45vh apart on the tilted plane —
+                                    tiles must overlap their band or the 40°
+                                    rotation opens diagonal gaps */
+  aspect-ratio: 2 / 3;
+  width: auto;
+  display: block;
+  border-radius: 12px;
+  background: var(--bg3);        /* visible while loading / after onerror */
+}
+#loginCollage .collage-row.r1 { top: 0%; }
+#loginCollage .collage-row.r2 { top: 25%; animation-duration: 95s; animation-direction: reverse; animation-delay: -18s; }
+#loginCollage .collage-row.r3 { top: 50%; animation-duration: 80s; animation-delay: -40s; }
+#loginCollage .collage-row.r4 { top: 75%; animation-duration: 110s; animation-direction: reverse; animation-delay: -55s; }
+#loginCollage::after {           /* dim veil between collage and gate text */
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(4,6,10,0.7), rgba(4,6,10,0.45) 45%, rgba(4,6,10,0.7));
+}
+#loginGate > :not(#loginCollage) { position: relative; z-index: 1; }
+@media (max-width: 700px) {      /* cheaper blur on phones */
+  #loginCollage .collage-row { filter: blur(4px) brightness(0.4) saturate(1.1); }
+}
 #tosPanel {
   width: 100%;
   max-width: 560px;
@@ -1596,6 +2039,186 @@ button, select, .back-btn, .pill-btn {
 #tosAccept { background: var(--accent); border-color: var(--accent); color: #06231f; font-weight: 700; }
 #tosAccept:hover { background: var(--accent-dim); color: #fff; }
 #tosDecline:disabled { opacity: 0.5; cursor: default; }
+
+/* ---- update welcome ("What's new") ----
+   Same layer as the T&C gate (z 200): it shows after the gate is gone, never
+   overlapping it — the login gate (z 210) still covers it until signed in. */
+#whatsNewOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: rgba(4, 6, 10, 0.88);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+}
+#whatsNewPanel {
+  width: 100%;
+  max-width: 460px;
+  max-height: 86vh;
+  display: flex;
+  flex-direction: column;
+  text-align: center;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 22px 22px 18px;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.65);
+}
+#whatsNewPanel .wn-logo { width: 120px; max-width: 50vw; margin: 0 auto 8px; }
+#whatsNewPanel h2 { color: var(--text); margin: 0 0 2px; }
+#wnVersion { margin-bottom: 12px; }
+#wnList {
+  overflow-y: auto;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-right: 4px;
+}
+#wnList .wn-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+#wnList .wn-heading {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-top: 2px;
+}
+#wnList .wn-item {
+  display: flex;
+  gap: 9px;
+  align-items: flex-start;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+#wnList .wn-item .icon { flex: none; margin-top: 2px; color: var(--accent); }
+#wnList .wn-item.fix .icon { color: #e2b93b; }   /* fixes get a wrench-gold mark */
+#wnActions { margin-top: 16px; display: flex; justify-content: center; }
+#wnClose {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #06231f;
+  font-weight: 700;
+  padding: 9px 26px;
+}
+#wnClose:hover { background: var(--accent-dim); color: #fff; }
+
+/* ---- hero spotlight carousel ---- */
+#heroCarousel {
+  position: relative;
+  border-radius: 16px;
+  overflow: hidden;
+  background: var(--bg3);
+  /* banner art is ~16:9 — cap the height so phones don't get a wall of image */
+  height: clamp(300px, 42vw, 430px);
+}
+#heroSlides, #heroSlides .hero-slide { position: absolute; inset: 0; }
+.hero-slide {
+  opacity: 0;
+  transition: opacity 0.6s ease;
+  pointer-events: none;         /* hidden slides must not eat taps */
+}
+.hero-slide.active { opacity: 1; pointer-events: auto; }
+.hero-slide .hero-bg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;            /* banners vary; fill and crop */
+}
+/* readability veil: darkest under the text at the bottom, clear at the top so
+   the art itself is the hero */
+.hero-slide .hero-veil {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    180deg,
+    rgba(4, 6, 10, 0.25) 0%,
+    rgba(4, 6, 10, 0.15) 35%,
+    rgba(4, 6, 10, 0.82) 72%,
+    rgba(4, 6, 10, 0.95) 100%
+  );
+}
+.hero-content {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.hero-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.hero-chip {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--accent);
+  background: rgba(4, 6, 10, 0.55);
+  border: 1px solid rgba(37, 184, 160, 0.45);
+  border-radius: 7px;
+  padding: 4px 9px;
+}
+.hero-title {
+  color: var(--text);
+  font-size: clamp(22px, 4.6vw, 34px);
+  font-weight: 800;
+  line-height: 1.15;
+  margin: 0;
+  text-shadow: 0 2px 14px rgba(0, 0, 0, 0.7);
+}
+.hero-desc {
+  margin: 0;
+  color: #cdd3dc;
+  font-size: 12.5px;
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;        /* exactly two lines, ellipsis when longer */
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  max-width: 620px;
+  text-shadow: 0 1px 8px rgba(0, 0, 0, 0.7);
+}
+.hero-actions { display: flex; gap: 10px; margin-top: 2px; }
+.hero-actions .pill-btn { padding: 9px 20px; font-size: 13px; }
+.hero-watch {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #06231f;
+  font-weight: 700;
+}
+.hero-watch:hover { background: var(--accent-dim); color: #fff; }
+.hero-details { background: rgba(4, 6, 10, 0.55); color: var(--text); }
+.hero-details:hover { background: var(--bg3); }
+/* dots: active slide's indicator is a wide bar, the rest small round dots */
+#heroDots {
+  position: absolute;
+  right: 14px;
+  bottom: 12px;
+  display: flex;
+  gap: 7px;
+  z-index: 1;
+}
+.hero-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 5px;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  background: rgba(255, 255, 255, 0.35);
+  transition: width 0.25s ease, background 0.25s ease;
+}
+.hero-dot.active { width: 26px; background: var(--accent); }
 
 /* ---- player sub/dub hot-swap toggle ----
    badge-sized pills; flex:none so a tight playerTop can never squeeze the
@@ -1797,14 +2420,29 @@ button, select, .back-btn, .pill-btn {
 
   /* ---- sections / detail ---- */
   section { padding: 14px 16px 20px; }   /* #playerView keeps its own padding: 0 */
-  /* detail head unwraps: poster + title row 1, controls row 2, info row 3 */
+  /* head as a two-column grid: the poster owns column 1 across the title and
+     info-list rows, and the Japanese/Studio/Producers/Status list fills the
+     formerly empty space to its right; synopsis card drops to a full row */
   /* hero full-bleed tracks the section padding at this breakpoint */
   #detailHero { margin: -14px -16px 10px; padding: 14px 16px 12px; }
-  #detailGrid { display: flex; flex-wrap: wrap; gap: 12px; }
+  #detailGrid { display: grid; grid-template-columns: 128px 1fr; gap: 6px 14px; }
   #detailMeta { display: contents; }
-  #detailTitle { flex: 1; min-width: 0; }
-  #detailControls { flex: 1 1 100%; }
-  #detailInfo { flex: 1 1 100%; margin-top: 0; padding: 12px 14px; }
+  #detailTitle { grid-column: 2; grid-row: 1; min-width: 0; }
+  #detailPoster { grid-column: 1; grid-row: 1 / span 2; }
+  #detailMetaRows { grid-column: 2; grid-row: 2; margin-top: 0; }
+  /* #detailMeta/#detailInfo{display:contents} unwrap these into the grid */
+  #detailMetaLine { grid-column: 1 / -1; margin-top: 0; white-space: normal; }
+  #detailControls { grid-column: 1 / -1; justify-content: flex-end; }
+  #favBtn { width: 38px; height: 38px; padding: 0; }
+  #detailInfo { display: contents; }
+  #detailInfoBody {
+    display: block;   /* undo the base display:contents, keep card children together */
+    grid-column: 1 / -1;
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 12px 14px;
+  }
   /* synopsis clamps to 3 lines behind a View more toggle (mobile only) */
   #detailSynopsis.clamped {
     display: -webkit-box;
@@ -1827,7 +2465,16 @@ button, select, .back-btn, .pill-btn {
   .fav-btn.remove-btn { right: 52px; }
   .alpha-btn, .page-btn { min-width: 38px; padding: 9px 10px; font-size: 13px; }
   .chip { padding: 5px 10px; font-size: 11px; }
-  .ep-btn { padding: 8px 4px; font-size: 12px; }
+  /* detail episodes panel: wrapping header row, full-width find box, tighter tiles */
+  .ep-head { flex-wrap: wrap; }
+  #epFind { flex: 1 1 100%; min-width: 0; }
+  #epFind input { width: 100%; }
+  .audio-pills button { padding: 7px 12px; }
+  .detail-tab { padding: 9px 8px 10px; font-size: 12px; }
+  .ep-grid { grid-template-columns: repeat(auto-fill, minmax(72px, 1fr)); gap: 7px; }
+  .ep-btn { padding: 9px 4px 7px; }
+  .ep-btn .ep-num { font-size: 14px; }
+  #panelSeasons .slider .card { width: 124px; }
   .side-item { padding: 12px 4px; font-size: 12px; }   /* vertical icon-over-label tiles (820px block) */
   .pill-btn, #moreBtn { padding: 6px 12px; font-size: 12px; }
   .sug-item { padding: 10px 12px; font-size: 14px; }
@@ -1842,7 +2489,7 @@ button, select, .back-btn, .pill-btn {
   #playerBottom { padding: 8px 12px; flex-wrap: wrap; }
   #playerBottom .pill-btn { padding: 6px 12px; }
   #playerRight { gap: 5px; }
-  #qualitySel { padding: 4px 7px; font-size: 11px; }
+  #qualitySel, #serverSel { padding: 4px 7px; font-size: 11px; }
   #playerRight .pill-btn {
     padding: 5px 10px;
     font-size: 11px;
@@ -1851,7 +2498,11 @@ button, select, .back-btn, .pill-btn {
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .overlay-btn { right: 10px; bottom: 88px; padding: 8px 14px; }        /* skip intro */
+  /* skip intro: lives inside the 16:9 video band now, not a full-screen wrap */
+  .overlay-btn { right: 10px; bottom: 12%; padding: 8px 14px; }
+  #playerView.in-player #videoArea { max-height: none; }          /* full-bleed band */
+  #playerView.in-player #playerDetailSlot { padding: 12px 14px 24px; }
+  .player-loading { gap: 8px; }                                   /* veil is band-sized */
 }
 
 @media (max-width: 480px) {
@@ -1863,12 +2514,18 @@ button, select, .back-btn, .pill-btn {
   .grid.small { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
   .card .card-title { font-size: 12px; }
   #detailHero { margin: -12px -12px 10px; padding: 12px 12px 12px; }
-  #detailGrid { gap: 10px; }
+  #detailGrid { gap: 10px; grid-template-columns: 110px 1fr; }
   #detailPoster { width: 110px; }
   #detailTitle { font-size: 20px; }
+  #detailMetaLine { font-size: 12px; }
   .segmented button { padding: 5px 12px; font-size: 12px; }
   .meta-row { flex-wrap: wrap; }
   .meta-key { width: 74px; }
+  /* schedule: tighter cards at phone width */
+  .sched-thumb { width: 78px; }
+  .sched-title { font-size: 14px; }
+  .sched-syn { -webkit-line-clamp: 2; }
+  .sched-day { min-width: 58px; }
   .bf { flex: 1 1 42%; }
   #miniPlayer { left: 8px; right: 8px; bottom: 8px; width: auto; }
   #toast { max-width: calc(100vw - 24px); }

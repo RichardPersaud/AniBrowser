@@ -17,6 +17,13 @@ const { version: APP_VERSION } = require('./package.json');
 const API_LATEST = 'https://api.github.com/repos/RichardPersaud/AniBrowser/releases/latest';
 const API_LIST = 'https://api.github.com/repos/RichardPersaud/AniBrowser/releases?per_page=10';
 
+// Play-distributed builds (the Kotlin shell detects the missing
+// REQUEST_INSTALL_PACKAGES permission and appends this argv flag): Google Play
+// policy forbids in-app update flows, so the updater stays completely dormant —
+// no GitHub checks, no downloads — and reports disabled so the UI hides the
+// Updates row and banner entirely.
+const PLAY_BUILD = process.argv.includes('--play');
+
 let status = { state: 'idle', version: null, progress: 0, error: null, apkUrl: null, apkPath: null };
 let inited = false;
 
@@ -140,7 +147,7 @@ async function download(url, dest, onProgress) {
 }
 
 function initUpdater() {
-  if (inited) return;
+  if (inited || PLAY_BUILD) return;
   inited = true;
   // check right after launch (short delay so node boot isn't competing with
   // the WebView handshake), then every 6h (mirrors the Electron cadence)
@@ -174,10 +181,11 @@ async function check() {
 }
 
 function updaterStatus() {
-  return status;
+  return { ...status, disabled: PLAY_BUILD };
 }
 
 async function updaterAction(action) {
+  if (PLAY_BUILD) throw new Error('Updates are handled by Google Play in this build');
   if (action === 'check') return check();
   if (action === 'download') {
     // idempotent: a double-tap while a download runs reports status instead of

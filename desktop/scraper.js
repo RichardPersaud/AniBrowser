@@ -113,6 +113,66 @@ async function recentlyUpdated(page = 1) {
   return parseFilmList(await (await get(url)).text());
 }
 
+// ---- home spotlight (hero carousel) ----
+// The homepage ships everything a hero needs in ONE fetch: a swiper spotlight
+// (banner art, type / duration / premiere date, quality, sub-dub counts,
+// description, both links) plus a trending list whose posters we join in by
+// slug so the detail page can open with its portrait art.
+async function spotlight() {
+  const html = await (await get(`${BASE}/home`)).text();
+
+  // slug -> poster from every film-poster link on the page (trending list,
+  // sidebar top-10 — extras are harmless)
+  const posters = new Map();
+  for (const m of html.matchAll(
+    /<a href="[^"]*\/([a-z0-9-]+)"\s+class="film-poster"[^>]*>\s*<img src="([^"]+)"\s+class="film-poster-img"/g
+  )) {
+    if (!posters.has(m[1])) posters.set(m[1], m[2]);
+  }
+
+  // the spotlight swiper sits between deslide-wrap and the first home section;
+  // its swiper-slide blocks would otherwise mix with the trending list's own
+  const spot = html.slice(
+    html.indexOf('deslide-wrap'),
+    html.indexOf('block_area_home')
+  );
+  const out = [];
+  for (const b of spot.split('<div class="swiper-slide">').slice(1)) {
+    const img = b.match(/deslide-cover-img">\s*<img class="film-poster-img"\s+src="([^"]+)"/);
+    const title = b.match(/desi-head-title[^>]*>\s*([^<]+?)\s*</);
+    // the Detail button's href is the show's page: /<slug>
+    const detail = b.match(/desi-buttons[\s\S]*?<a href="[^"]*\/([a-z0-9-]+)"\s+class="btn btn-secondary/);
+    if (!img || !title || !detail) continue;
+    const chip = (iconCls) => {
+      const m = b.match(
+        new RegExp(`scd-item[^>]*>\\s*<i class="fas fa-${iconCls}[^"]*"[^>]*></i>([^<]*)`)
+      );
+      return m ? decodeEntities(m[1].trim()) : null;
+    };
+    const qual = b.match(/<span class="quality">([^<]*)</);
+    const tick = (cls) => {
+      const m = b.match(new RegExp(`tick-${cls}">\\s*<i[^>]*></i>([^<]*)`));
+      return m ? m[1].trim() : null;
+    };
+    const desc = b.match(/desi-description">\s*([\s\S]*?)\s*<\/div>/);
+    out.push({
+      slug: detail[1],
+      title: decodeEntities(title[1]),
+      banner: img[1],
+      poster: posters.get(detail[1]) || null,
+      type: chip('play-circle'),
+      duration: chip('clock'),
+      date: chip('calendar'),
+      quality: qual ? qual[1].trim() : null,
+      subCount: tick('sub'),
+      dubCount: tick('dub'),
+      synopsis: desc ? decodeEntities(desc[1].replace(/\s+/g, ' ').trim()) : null,
+    });
+    if (out.length >= 5) break;
+  }
+  return out;
+}
+
 // ---- browse (az-list / filter pages) ----------------------------------------
 
 function parseTotalPages(html) {
@@ -242,6 +302,9 @@ async function details(slug) {
 
   const data = {
     slug,
+    // the show's own portrait art (first film-poster-img on the page) — lets
+    // entry points that only know the slug (hero spotlight) backfill the poster
+    poster: (html.match(/<img src="([^"]+)"\s*class="film-poster-img"/) || [])[1] || null,
     synopsis: overview,
     japanese: metaText(html, 'Japanese'),
     aired: metaText(html, 'Aired'),
@@ -356,7 +419,8 @@ function decodeBlob(b64) {
   return Buffer.from(data.map((b, i) => b ^ key[i % key.length])).toString('utf8');
 }
 
-// Returns a deduped list of candidate embeds for the requested type, ZokoAnime first.
+// Returns { candidates: [{url, name}], names: [server names in DOM order] }
+// for the requested audio type, ZokoAnime first among candidates.
 async function pickEmbedUrls(epId, type, cap = 3) {
   const url = `${BASE}/api/theme/episode/servers?episodeId=${epId}`;
   const j = await (await get(url)).json();
@@ -369,6 +433,9 @@ async function pickEmbedUrls(epId, type, cap = 3) {
     if (dtype && hash) entries.push({ type: dtype, name: name || '', hash });
   }
   const wanted = entries.filter((e) => e.type === type);
+  // every server the episode offers for this track, in site order — the UI's
+  // server dropdown lists these even before any embed is fetched
+  const names = [...new Set(wanted.map((e) => e.name).filter(Boolean))];
   const zoko = wanted.find((e) => e.name === 'ZokoAnime');
   const rest = wanted.filter((e) => e !== zoko);
   const ordered = [...(zoko ? [zoko] : []), ...rest];
@@ -387,12 +454,69 @@ async function pickEmbedUrls(epId, type, cap = 3) {
     out.push({ url, name: e.name });
     if (out.length >= cap) break;
   }
-  return out;
+  return { candidates: out, names };
 }
 
 // Try one embed page; resolve to a source object or null if unusable.
 // `requireM3u8`: first pass wants HLS (quality menu); second pass accepts any
 // playable src (e.g. mp4) — an episode without a subtitle track beats failing.
+// Megaplay embeds (HD-1 / Vidstream-2 servers) load their stream through JS
+// instead of the __P blob: the embed page carries data-id, and a JSON API at
+// stream/getSources?id=<data-id> returns {enc, tracks, intro, outro} where
+// enc is a base64url AES-256-CBC blob decrypting to {"file": <playlist url>}.
+// Static key/iv pair shipped in megaplay's own newclient.min.js: the 16-char
+// key is zero-padded to 32 bytes (AES-256) and reused for the IV.
+function megaplayDecrypt(enc) {
+  const crypto = require('crypto');
+  const key = Buffer.concat([
+    Buffer.from('i?LMTAx0Q6,:}50U', 'latin1'),
+    Buffer.alloc(16),
+  ]);
+  const iv = Buffer.from('W0;27ToaUpl_P%\'c', 'latin1');
+  const data = Buffer.from(enc.replace(/-/g, '+').replace(/_/g, '/'), 'base64');
+  const d = crypto.createDecipheriv('aes-256-cbc', key, iv);
+  return Buffer.concat([d.update(data), d.final()]).toString('utf8');
+}
+
+// Resolve one megaplay embed page to a source object, or null if unusable.
+async function tryMegaplay(embed, requireM3u8) {
+  try {
+    const embedOrigin = new URL(embed.url).origin + '/';
+    const page = await (
+      await get(embed.url, { referer: BASE + '/', timeout: 25000 })
+    ).text();
+    // the player div's data-id is the API's key (realid/mediaid are not)
+    const dataId = (page.match(/id="megaplay-player"\s+data-id="(\d+)"/) || [])[1];
+    if (!dataId) return null;
+
+    const apiUrl = `${embedOrigin}stream/getSources?id=${dataId}`;
+    const j = await (await get(apiUrl, { referer: embed.url, timeout: 25000 })).json();
+    if (!j.enc) return null;
+    const cfg = JSON.parse(megaplayDecrypt(j.enc));
+    if (!cfg.file) return null;
+    if (requireM3u8 && !cfg.file.includes('.m3u8')) return null;
+
+    const subtitles = (j.tracks || [])
+      .filter((t) => t.file)
+      .map((t) => ({ label: t.label || t.lang || 'English', src: t.file, default: /english/i.test(t.label || t.lang || '') }));
+    // megaplay reports intro/outro windows — keep the shape the UI expects
+    const skip = (j.intro && j.intro.end > j.intro.start) || (j.outro && j.outro.end > j.outro.start)
+      ? { intro: j.intro || null, outro: j.outro || null }
+      : null;
+
+    return {
+      url: cfg.file,
+      hls: cfg.file.includes('.m3u8'),
+      referer: embedOrigin,
+      subtitles,
+      skip,
+      provider: embed.name,
+    };
+  } catch {
+    return null;
+  }
+}
+
 async function tryEmbed(embed, requireM3u8) {
   try {
     const embedOrigin = new URL(embed.url).origin + '/';
@@ -425,7 +549,10 @@ async function tryEmbed(embed, requireM3u8) {
 }
 
 // Returns { url, hls, subtitles: [{label, src, default}], skip, referer, provider }
-async function getSources(slug, epNum, type = 'sub') {
+// `server` (optional): resolve only that named provider (HD-1, ZokoAnime, …)
+// instead of first-success across all of them — powers the player's server
+// dropdown. The response's `servers` array lists what the episode offers.
+async function getSources(slug, epNum, type = 'sub', server) {
   const eps = await episodes(slug);
   const ep =
     eps.find((e) => e.num === String(epNum).trim()) ||
@@ -434,23 +561,51 @@ async function getSources(slug, epNum, type = 'sub') {
 
   const other = type === 'sub' ? 'dub' : 'sub';
   const tryType = async (audioType) => {
-    const candidates = await pickEmbedUrls(ep.epId, audioType);
-    if (!candidates.length) return null;
+    const { candidates, names } = await pickEmbedUrls(ep.epId, audioType);
+    if (!candidates.length) return { src: null, names };
+    // an explicit server request resolves just that provider — no cross-server
+    // failover here; the caller decides what to do when it fails
+    const wanted = server ? candidates.filter((c) => c.name === server) : candidates;
+    if (server && !wanted.length) return { src: null, names };
     // prefer HLS sources; otherwise accept any playable stream (mp4 etc.)
     for (const mode of [true, false]) {
-      for (const embed of candidates) {
-        const src = await tryEmbed(embed, mode);
+      for (const embed of wanted) {
+        // megaplay embeds (HD-1 / Vidstream-2) need their own resolver — a
+        // different CDN from ZokoAnime's, which matters when one is blocked
+        const src = embed.url.includes('megaplay')
+          ? await tryMegaplay(embed, mode)
+          : await tryEmbed(embed, mode);
         // audioType = the track this stream actually is — when the requested
         // type has no embeds we silently resolve the other one, and the UI
         // needs to know so it can say so instead of playing the wrong audio
-        if (src) return { ...src, audioType };
+        if (src) return { src: { ...src, audioType }, names };
       }
     }
-    return null;
+    return { src: null, names };
   };
 
-  const src = (await tryType(type)) || (await tryType(other));
-  if (src) return src;
+  let names = [];
+  let src = null;
+  for (const audioType of [type, other]) {
+    let r = await tryType(audioType);
+    names = r.names.length ? r.names : names;
+    // transient resolve failures (embed-API hiccups, rate limits) look
+    // identical to genuinely dead embeds — one quiet retry before falling
+    // through to the other audio track keeps "dead or removed" honest
+    if (!r.src) {
+      await new Promise((ok) => setTimeout(ok, 1200));
+      r = await tryType(audioType);
+      names = r.names.length ? r.names : names;
+    }
+    if (r.src) { src = r.src; break; }
+  }
+  if (src) return { ...src, servers: names };
+  if (server) {
+    // the user picked a server explicitly — say so instead of the generic
+    // "episode unavailable" line, and don't poison the dead-episode cache
+    // (the other servers may still be fine)
+    throw new Error(`Server ${server} is not available for this episode`);
+  }
 
   noteDeadEp(ep.epId);
   const err = new Error(
@@ -461,7 +616,41 @@ async function getSources(slug, epNum, type = 'sub') {
   throw err;
 }
 
+// ---- airing schedule ----
+// The day list is an AJAX fragment rendered by the source's schedule widget:
+// POST-less GET of /api/theme/schedule/day?tzOffset=&date= returns items whose
+// times are already shifted into the client's timezone via tzOffset.
+const SCHED_BASE = `${BASE}/api/theme/`;
+
+async function scheduleDay(date, tzOffset = 0) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error('Bad date');
+  const body = await (
+    await get(`${SCHED_BASE}schedule/day?tzOffset=${tzOffset}&date=${date}`)
+  ).text();
+  // the widget answers a JSON envelope ({ html: "<ul..." }) — its escaping
+  // collapses to plain HTML once parsed
+  const html = (JSON.parse(body).html || '').replace(/\\\//g, '/');
+
+  const items = [];
+  for (const li of html.split('<li>').slice(1)) {
+    const link = li.match(/<a href="[^"]*\/watch\/([a-z0-9-]+)"/);
+    if (!link) continue; // stray wrapper, not a schedule row
+    const time = (li.match(/<div class="time">([\d:]+)<\/div>/) || [])[1] || null;
+    const name = li.match(/data-jname="([^"]*)"[^>]*>\s*([^<]+)</) ||
+      li.match(/data-jname="([^"]*)"/) || [];
+    const ep = (li.match(/Episode\s*(\d+)/) || [])[1];
+    items.push({
+      slug: link[1],
+      time,
+      title: unescapeBackslashes(decodeEntities((name[2] || name[1] || '').trim())),
+      jname: unescapeBackslashes(decodeEntities(name[1] || '')),
+      ep: ep ? parseInt(ep, 10) : null,
+    });
+  }
+  return items;
+}
+
 module.exports = {
-  UA, BASE, search, recentlyUpdated, browse, browsePath, upcoming, details,
-  episodes, audioTracks, getSources, isDeadEp, ratings, ratingFor,
+  UA, BASE, search, recentlyUpdated, browse, browsePath, upcoming, details, spotlight,
+  episodes, audioTracks, getSources, isDeadEp, ratings, ratingFor, scheduleDay,
 };

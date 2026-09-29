@@ -15,6 +15,8 @@ mkdir -p "$STAGE/nodejs-project/ui"
 cp "$APP/server.js" "$APP/cloud.js" "$APP/scraper.js" "$STAGE/nodejs-project/"
 cp "$HERE/../node-stub/index.js" "$HERE/../node-stub/updater.js" "$STAGE/nodejs-project/"
 cp "$APP"/ui/index.html "$APP"/ui/style.css "$APP"/ui/app.js "$APP"/ui/hls.min.js "$APP"/ui/empty.png "$APP"/ui/logo.png "$APP"/ui/logo-nav.png "$APP"/ui/logo-t.png "$STAGE/nodejs-project/ui/"
+mkdir -p "$STAGE/nodejs-project/ui/covers"   # login-gate collage posters
+cp "$APP"/ui/covers/*.jpg "$STAGE/nodejs-project/ui/covers/"
 
 # keep the bundled version identical to the Electron app's
 VER="$(grep -o '"version": *"[^"]*"' "$APP/package.json" | head -1 | sed 's/.*"\(.*\)"/\1/')"

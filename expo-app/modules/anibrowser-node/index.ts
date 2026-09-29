@@ -14,6 +14,10 @@ type AniBrowserNodeModule = {
   installApk(path: string): Promise<boolean>;
   /** Copy the APK into public Downloads (API 29+) and open the Downloads list. */
   openUpdatesDir(path: string): Promise<boolean>;
+  /** Show the native Google account chooser; resolves with a Google ID token (JWT). */
+  googleSignIn(): Promise<string>;
+  /** Open the system "add a Google account" screen over the app (zero accounts on device). */
+  addGoogleAccount(): Promise<boolean>;
 };
 
 export default requireNativeModule('AniBrowserNode') as AniBrowserNodeModule;

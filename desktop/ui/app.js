@@ -36,6 +36,10 @@ const state = {
   introTimer: null,
   view: 'homeView',
   recentLoaded: false,
+  detailTab: 'episodes', // active detail tab; reset by openDetail
+  audioCounts: null,     // { sub, dub } source counts from /api/detail
+  relCountsLoaded: false, // SEASONS "N EPS" badges fetched once per visit
+  epFilter: '',          // FIND EP input value
 };
 
 const PROGRESS_KEY = 'anibrowser_progress';
@@ -43,6 +47,20 @@ const PREFS_KEY = 'anibrowser_prefs';
 const FAVS_KEY = 'anibrowser_favorites';
 const TOMBSTONES_KEY = 'anibrowser_tombstones';
 const PREFS_TS_KEY = 'anibrowser_prefs_ts';
+const GUEST_KEY = 'anibrowser_guest';
+const WN_KEY = 'anibrowser_last_whatsnew'; // version last welcomed — device-local
+
+// guest mode: local-only session flag. Deliberately a standalone key, NOT a
+// prefs entry — prefs are pushed whole-blob to the cloud and mirrored into the
+// durable backup file, so a guest flag there would leak across devices and
+// self-resurrect from the backup after being cleared.
+function isGuest() {
+  return localStorage.getItem(GUEST_KEY) === '1';
+}
+function setGuest(on) {
+  if (on) localStorage.setItem(GUEST_KEY, '1');
+  else localStorage.removeItem(GUEST_KEY);
+}
 
 // tombstones: { favorites: {slug: ts}, progress: {slug: ts} } — deletes need
 // markers so cloud sync can't resurrect them on another device
@@ -499,11 +517,41 @@ function toast(msg, isErr = false) {
   toastTimer = setTimeout(() => { t.hidden = true; }, 4000);
 }
 
+/* ---- themed confirm dialog (replaces window.confirm) ----
+   The Android WebView renders confirm() as a bare system popup that clashes
+   with the theme; this resolves a promise instead, so call sites stay
+   `if (!await confirmDialog(...)) return`. */
+let dlgResolve = null;
+function confirmDialog(msg, { title = 'Please confirm', okText = 'Confirm', cancelText = 'Cancel' } = {}) {
+  if (dlgResolve) dlgResolve(false); // a superseding dialog cancels the open one
+  $('dlgTitle').textContent = title;
+  $('dlgMsg').textContent = msg;
+  $('dlgOk').textContent = okText;
+  $('dlgCancel').textContent = cancelText;
+  $('confirmDlg').hidden = false;
+  $('dlgCancel').focus(); // safe default; also routes Escape to the dialog's key handler
+  return new Promise((res) => { dlgResolve = res; });
+}
+function closeConfirm(ok) {
+  if (!dlgResolve) return;
+  $('confirmDlg').hidden = true;
+  dlgResolve(ok);
+  dlgResolve = null;
+}
+$('dlgCancel').addEventListener('click', () => closeConfirm(false));
+$('dlgOk').addEventListener('click', () => closeConfirm(true));
+// tap outside the card, or Escape, means cancel
+$('confirmDlg').addEventListener('click', (e) => { if (e.target === $('confirmDlg')) closeConfirm(false); });
+$('confirmDlg').addEventListener('keydown', (e) => { if (e.key === 'Escape') closeConfirm(false); });
+
 function showView(name) {
-  for (const v of ['homeView', 'browseView', 'detailView', 'playerView', 'collectionView', 'profileView', 'settingsView', 'feedbackView']) {
+  for (const v of ['homeView', 'browseView', 'scheduleView', 'detailView', 'playerView', 'collectionView', 'profileView', 'settingsView', 'feedbackView']) {
     $(v).hidden = v !== name;
   }
   state.view = name;
+  // coming back home after a playback session: refresh the hero buttons so a
+  // show just watched flips from "Watch now" to "Continue EP n"
+  if (name === 'homeView' && heroItems.length) renderHero(heroIdx);
   // the profile page swaps the navbar for a round back + settings pair, the
   // settings page for a round back + feedback bubble, the feedback board for
   // a lone round back; everywhere else the standard navbar shows. The back
@@ -518,9 +566,14 @@ function showView(name) {
   document.querySelectorAll('.side-item[data-nav]').forEach((b) => {
     b.classList.toggle('active',
       (name === 'homeView' && b.dataset.nav === 'home') ||
-      (name === 'browseView' && b.dataset.nav === 'browse'));
+      (name === 'browseView' && b.dataset.nav === 'browse') ||
+      (name === 'scheduleView' && b.dataset.nav === 'schedule'));
   });
   $('backBtn').hidden = !bare || histStack.length === 0;
+  // the player page hosts the detail content below the video: mount it on
+  // entry, restore it to the detail page on every exit path
+  if (name === 'playerView') ensureDetailMounted();
+  else restorePlayerDetail();
   $('main').scrollTop = 0;
 }
 
@@ -554,6 +607,7 @@ window.addEventListener('popstate', () => restoreHist());
 // re-show a view-level snapshot without re-pushing history
 function restoreView(v) {
   if (v === 'browseView') showView('browseView');
+  else if (v === 'scheduleView') { showView('scheduleView'); loadSchedule(); }
   else if (v === 'profileView') { renderProfile(); showView('profileView'); }
   else if (v === 'detailView') showView('detailView');
   else if (v === 'settingsView' || v === 'collectionView') showView(v);
@@ -967,6 +1021,93 @@ function navHome() {
   renderUpcoming();
 }
 
+/* ---------------- schedule (airing times) ----------------
+   AnimeNow-style day picker over the source's schedule widget: a 14-day strip
+   with today highlighted, and per-day episode rows (title, local air time,
+   next episode) enriched with the show's poster/synopsis server-side. */
+
+const SCHED_DAYS_SHOWN = 14; // 3 days back + today + 10 ahead
+let schedReq = 0; // staleness guard: only the newest answered request renders
+
+function schedIso(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function buildSchedDays() {
+  const strip = $('schedDays');
+  strip.innerHTML = '';
+  const today = new Date();
+  const start = new Date(today);
+  start.setDate(today.getDate() - 3); // the strip opens a little behind today
+  for (let i = 0; i < SCHED_DAYS_SHOWN; i++) {
+    const d = new Date(start);
+    d.setDate(start.getDate() + i);
+    const iso = schedIso(d);
+    const b = el('button', 'sched-day' + (iso === schedIso(today) ? ' today' : ''));
+    b.dataset.date = iso;
+    b.appendChild(el('span', 'sd-wd', d.toLocaleDateString('en-US', { weekday: 'short' }).toUpperCase()));
+    b.appendChild(el('span', 'sd-num', String(d.getDate())));
+    b.appendChild(el('span', 'sd-mon', iso === schedIso(today) ? 'TODAY' : d.toLocaleDateString('en-US', { month: 'short' }).toUpperCase()));
+    b.addEventListener('click', () => loadSchedule(iso));
+    strip.appendChild(b);
+  }
+}
+
+async function loadSchedule(date) {
+  if (!date) buildSchedDays();
+  date = date || schedIso(new Date());
+  document.querySelectorAll('.sched-day').forEach((b) => b.classList.toggle('active', b.dataset.date === date));
+  const seq = ++schedReq;
+  $('schedLoading').hidden = false;
+  $('schedEmpty').hidden = true;
+  $('schedList').innerHTML = '';
+  try {
+    const { items } = await api(`/api/schedule?date=${date}&tz=${new Date().getTimezoneOffset()}`);
+    if (seq !== schedReq) return; // superseded by another day tap
+    $('schedLoading').hidden = true;
+    const list = $('schedList');
+    list.innerHTML = '';
+    if (!items.length) $('schedEmpty').hidden = false;
+    for (const it of items) {
+      const card = el('article', 'sched-card');
+      const thumb = el('div', 'sched-thumb');
+      const img = el('img');
+      if (it.poster) {
+        img.src = it.poster;
+        img.onerror = () => { img.src = `/stream?u=${btoaUrl(it.poster)}`; img.onerror = null; };
+      } else {
+        img.src = EMPTY_IMG;
+      }
+      img.alt = it.title;
+      img.loading = 'lazy';
+      thumb.appendChild(img);
+      if (it.time) thumb.appendChild(el('span', 'sched-time-chip', it.time));
+      card.appendChild(thumb);
+
+      const info = el('div', 'sched-info');
+      info.appendChild(el('h3', 'sched-title', it.title));
+      info.appendChild(el('div', 'sched-time', `// ${it.time || '--:--'}`));
+      info.appendChild(el('div', 'sched-meta',
+        ['Anime', it.type, it.year].filter(Boolean).join(' · ')));
+      if (it.synopsis) {
+        const syn = el('p', 'sched-syn', it.synopsis);
+        info.appendChild(syn);
+      }
+      card.appendChild(info);
+      const go = el('span', 'sched-go');
+      go.innerHTML = icon('play');
+      card.appendChild(go);
+      card.addEventListener('click', () => openDetail(it.slug, it.title, it.poster));
+      list.appendChild(card);
+    }
+  } catch (e) {
+    if (seq === schedReq) {
+      $('schedLoading').hidden = true;
+      toast('Schedule failed: ' + e.message, true);
+    }
+  }
+}
+
 /* --- in-window mini player while browsing --- */
 
 function videoActive() {
@@ -1008,6 +1149,53 @@ $('miniExpand').addEventListener('click', () => {
   showView('playerView');
 });
 $('miniClose').addEventListener('click', () => stopPlayback());
+
+/* --- detail-in-player reparenting ---
+   The player page shows the show's info + episode picker under the video by
+   MOVING the live detail nodes into #playerDetailSlot while an episode plays
+   (same trick as the <video> ↔ #miniSlot move above). Reparenting keeps every
+   listener and ID lookup alive — nothing re-renders. */
+const DETAIL_NODE_IDS = ['detailMeta', 'detailTabs', 'panelEpisodes', 'panelSeasons', 'panelRelated', 'panelDetails'];
+let detailMounted = false;
+
+function ensureDetailMounted() {
+  if (detailMounted) return;
+  const slot = $('playerDetailSlot');
+  for (const id of DETAIL_NODE_IDS) slot.appendChild($(id));
+  // the info card (synopsis/genres/studio…) moves under the player's
+  // //DETAILS tab; back on the detail page it returns into #detailMeta
+  $('panelDetails').appendChild($('detailInfo'));
+  // the audio/server/quality controls move under the band too, between the
+  // title header and the tabs (the ← Episodes button stays above the video)
+  slot.insertBefore($('playerRight'), $('detailTabs'));
+  // loading veil + skip-intro position against #playerWrap today; inside
+  // #videoArea they track the video band exactly (incl. fullscreen)
+  $('videoArea').append($('skipIntroBtn'), $('playerLoading'));
+  $('playerView').classList.add('in-player');
+  detailMounted = true;
+}
+
+function restorePlayerDetail() {
+  if (!detailMounted) return;
+  $('detailGrid').appendChild($('detailMeta')); // after the poster, original order
+  $('detailMeta').appendChild($('detailInfo')); // back inside the meta block
+  $('playerTopRow').appendChild($('playerRight')); // controls back above the band
+  const view = $('detailView'); // tabs + panels are its last 5 children
+  for (const id of DETAIL_NODE_IDS.slice(1)) view.appendChild($(id));
+  const wrap = $('playerWrap');
+  wrap.insertBefore($('skipIntroBtn'), $('playerTop')); // original DOM order
+  wrap.insertBefore($('playerLoading'), $('playerTop'));
+  $('playerView').classList.remove('in-player');
+  detailMounted = false;
+  // //DETAILS exists only in the player — landing back on the detail page
+  // with it active would leave every panel hidden
+  if (state.detailTab === 'details') setDetailTab('episodes');
+  syncDetailTabs();
+}
+
+// the detail content is live while it is on the detail page OR mounted under
+// the player — async fills must keep rendering into the player slot
+const detailAlive = () => state.view === 'detailView' || detailMounted;
 
 /* --- touch: (removed) custom fullscreen / show-bars handling — the video
        keeps its native controls only --- */
@@ -1058,12 +1246,16 @@ async function topNav(target) {
   // you're already on (that would just stack a no-op "back to same place")
   const targetView = target === 'home' ? 'homeView'
     : target === 'browse' ? 'browseView'
+    : target === 'schedule' ? 'scheduleView'
     : target === 'settings' ? 'settingsView'
     : target === 'feedback' ? 'feedbackView' : 'profileView';
   const fromView = state.view; // capture now — state.view moves on
   if (fromView !== targetView) pushHist(() => restoreView(fromView));
   if (target === 'home') navHome();
-  else if (target === 'browse') {
+  else if (target === 'schedule') {
+    showView('scheduleView');
+    loadSchedule(); // defaults to today; re-tap just re-selects the same day
+  } else if (target === 'browse') {
     showView('browseView');
     loadBrowse(); // loadBrowse exits results mode — the full catalog shows
   } else if (target === 'feedback') {
@@ -1230,6 +1422,121 @@ async function loadRecent() {
   }
 }
 
+/* ---------------- hero spotlight carousel ---------------- */
+
+// featured shows from the source homepage (max 5): banner art, stat chips,
+// 2-line synopsis, Watch now / Details. Best-effort like the other home rows —
+// a failed fetch just leaves the hero hidden.
+let heroItems = [];
+let heroIdx = 0;
+let heroTimer = null;
+const HERO_ADVANCE_MS = 7000;
+
+async function loadHero() {
+  try {
+    const { results } = await api('/api/spotlight');
+    heroItems = results.filter(r18Visible).slice(0, 5);
+    if (!heroItems.length) return;
+    renderHero();
+  } catch { /* hero stays hidden */ }
+}
+
+function heroSlideHtml(r, i, active) {
+  const slide = el('div', 'hero-slide');
+  if (active) slide.classList.add('active');
+  const img = el('img', 'hero-bg');
+  if (r.banner) {
+    img.src = r.banner;
+    img.onerror = () => { img.src = `/stream?u=${btoaUrl(r.banner)}`; img.onerror = null; };
+  }
+  img.alt = '';
+  slide.appendChild(img);
+  slide.appendChild(el('div', 'hero-veil'));
+
+  const content = el('div', 'hero-content');
+  const chips = el('div', 'hero-chips');
+  for (const c of [r.type, r.duration, r.date].filter(Boolean)) {
+    chips.appendChild(el('span', 'hero-chip', c));
+  }
+  if (chips.children.length) content.appendChild(chips);
+  content.appendChild(el('h2', 'hero-title', r.title));
+  if (r.synopsis) content.appendChild(el('p', 'hero-desc', r.synopsis));
+
+  const actions = el('div', 'hero-actions');
+  // watched this show before? the primary button becomes "Continue" and picks up
+  // at the saved episode/position instead of restarting at episode 1
+  const progress = getJSON()[r.slug];
+  const resume = progress && progress.epNum && (progress.pct || 0) < 100;
+  const watch = el('button', 'pill-btn hero-watch');
+  if (resume) {
+    watch.innerHTML = `${icon('play')} Continue EP ${progress.epNum}`;
+    watch.addEventListener('click', () => {
+      openDetail(r.slug, r.title, r.poster, () => {
+        state.epNum = progress.epNum;
+        startPlayback(progress.epNum, prefAudioType());
+      });
+    });
+  } else {
+    watch.innerHTML = `${icon('play')} Watch now`;
+    // straight into episode 1 — same onReady flow the continue-watching cards
+    // use (openDetail loads the episodes, then playback starts)
+    watch.addEventListener('click', () => {
+      openDetail(r.slug, r.title, r.poster, () => {
+        state.epNum = '1';
+        startPlayback('1', prefAudioType());
+      });
+    });
+  }
+  const details = el('button', 'pill-btn hero-details');
+  details.innerHTML = `${icon('info')} Details`;
+  details.addEventListener('click', () => {
+    // poster may be null (spotlight slides don't carry one) — openDetail
+    // backfills it from the detail page data
+    openDetail(r.slug, r.title, r.poster);
+  });
+  actions.appendChild(watch);
+  actions.appendChild(details);
+  content.appendChild(actions);
+  slide.appendChild(content);
+  return slide;
+}
+
+function renderHero(keepIdx) {
+  const wrap = $('heroSlides');
+  const dots = $('heroDots');
+  wrap.innerHTML = '';
+  dots.innerHTML = '';
+  // a re-render (returning home) keeps the slide the user was looking at;
+  // only the first paint starts from the beginning
+  heroIdx = Number.isInteger(keepIdx) && keepIdx >= 0 && keepIdx < heroItems.length ? keepIdx : 0;
+  heroItems.forEach((r, i) => {
+    wrap.appendChild(heroSlideHtml(r, i, i === heroIdx));
+    const dot = el('button', 'hero-dot');
+    if (i === heroIdx) dot.classList.add('active');
+    dot.title = r.title;
+    dot.addEventListener('click', () => heroGo(i));
+    dots.appendChild(dot);
+  });
+  $('heroCarousel').hidden = false;
+  restartHeroTimer();
+}
+
+function heroGo(i) {
+  heroIdx = i;
+  [...$('heroSlides').children].forEach((s, j) => s.classList.toggle('active', j === i));
+  [...$('heroDots').children].forEach((d, j) => d.classList.toggle('active', j === i));
+  restartHeroTimer(); // a manual switch buys a fresh full interval
+}
+
+function restartHeroTimer() {
+  clearInterval(heroTimer);
+  heroTimer = setInterval(() => {
+    // idle rotation only while Home is actually on screen
+    if ($('homeView').hidden || document.hidden) return;
+    heroGo((heroIdx + 1) % heroItems.length);
+  }, HERO_ADVANCE_MS);
+}
+
 /* ---------------- upcoming (Coming soon) ---------------- */
 
 let upcomingData = null; // cached /api/upcoming results
@@ -1361,6 +1668,46 @@ function btoaUrl(s) {
   return encodeURIComponent(btoa(unescape(encodeURIComponent(s))));
 }
 
+/* ---- login gate collage (hardcoded local posters under ui/covers) ----
+   Four rows of bundled posters panning in alternating directions behind the
+   sign-in screen, tilted 40° as one plane (#loginCollage .collage-tilt);
+   the rows are blurred/dimmed in CSS. Each half of a row repeats the list
+   twice so the shared translateX(-50%) marquee loop stays seamless AND wide
+   enough for the rotated diagonal extent (super-ultrawide needs ~4.6k px) —
+   same trick as #upTrack above. */
+const LOGIN_COVERS = [
+  'frieren-beyond-journey-s-end', 'jujutsu-kaisen', 'one-piece',
+  'demon-slayer-kimetsu-no-yaiba', 'attack-on-titan', 'solo-leveling',
+  'death-note', 'fullmetal-alchemist-brotherhood', 'steins-gate',
+  'code-geass-lelouch-of-the-rebellion', 'monster', 'spy-x-family',
+  'chainsaw-man', 'vinland-saga', 'dandadan', 'violet-evergarden',
+];
+
+function buildLoginCollage() {
+  const wrap = $('loginCollage');
+  if (!wrap || wrap.childElementCount) return;
+  const tilt = el('div', 'collage-tilt');
+  const tiles = () => {
+    const frag = document.createDocumentFragment();
+    for (const f of [...LOGIN_COVERS, ...LOGIN_COVERS]) {
+      const img = el('img');
+      img.src = `covers/${f}.jpg`; // same-origin under the local server
+      img.alt = '';
+      img.decoding = 'async';
+      img.onerror = () => { img.style.visibility = 'hidden'; }; // keep width → loop stays seamless
+      frag.appendChild(img);
+    }
+    return frag;
+  };
+  for (const cls of ['collage-row r1', 'collage-row r2', 'collage-row r3', 'collage-row r4']) {
+    const row = el('div', cls);
+    row.appendChild(tiles());
+    row.appendChild(tiles());
+    tilt.appendChild(row);
+  }
+  wrap.appendChild(tilt);
+}
+
 /* ---------------- continue watching ---------------- */
 
 function renderContinue() {
@@ -1414,8 +1761,8 @@ function renderContinue() {
   }
 }
 
-$('clearHistoryBtn').addEventListener('click', () => {
-  if (!confirm('Remove every show from your watch history?')) return;
+$('clearHistoryBtn').addEventListener('click', async () => {
+  if (!(await confirmDialog('Remove every show from your watch history?', { title: 'Clear watch history', okText: 'Clear all' }))) return;
   for (const slug of Object.keys(getJSON())) addTombstone('progress', slug);
   setJSON({});
   toast('Watch history cleared');
@@ -1424,10 +1771,36 @@ $('clearHistoryBtn').addEventListener('click', () => {
 
 /* ---------------- detail ---------------- */
 
+// meta line under the title: "EP 12 | TV | 24m | ★8.7" — the EP segment only
+// appears once an episode has actually been picked (state.epNum), never on a
+// cold open; d omitted re-renders from the cached /api/detail payload
+function renderMetaLine(d) {
+  if (d) state.detailData = d;
+  const line = $('detailMetaLine');
+  const det = d || state.detailData;
+  const parts = [
+    state.epNum ? `EP ${state.epNum}` : null,
+    det && det.type,
+    det && det.duration,
+    det && det.malScore ? `★ ${det.malScore}` : null,
+  ].filter(Boolean);
+  line.textContent = parts.join('  |  ');
+  line.hidden = !parts.length;
+}
+
+// inline switches (auto-next / hot swap / server change) skip renderEpisodes,
+// so the "EP n" line and the grid's .current tile need an explicit sync
+function syncCurrentEp() {
+  renderMetaLine();
+  for (const b of document.querySelectorAll('#epGrid .ep-btn'))
+    b.classList.toggle('current', b.dataset.num === String(state.epNum));
+}
+
 function renderDetailInfo(d) {
   if (!d) {
     // loading state: skeleton lines where the info will land
     $('detailInfo').hidden = false;
+    $('detailMetaLine').hidden = true; // no stale meta line during load
     $('detailInfoLoading').hidden = true;
     for (const id of ['detailSynopsis', 'detailChips', 'detailGenres', 'detailMetaRows']) $(id).hidden = true;
     const box = $('detailSkeleton');
@@ -1443,18 +1816,16 @@ function renderDetailInfo(d) {
   $('detailSkeleton').hidden = true;
   $('detailSynopsis').textContent = d.synopsis || '';
   $('detailSynopsis').hidden = !d.synopsis;
+  renderMetaLine(d); // type/duration/score moved here + live "EP n" segment
 
-  // chips: type · duration · rating · mal score · sub/dub counts
+  // chips: age rating · aired date (the rest lives in the meta line)
   const chips = $('detailChips');
   chips.hidden = false;
   $('detailMetaRows').hidden = false;
   chips.innerHTML = '';
   const chipVals = [
-    d.type, d.duration, d.pgRating,
-    d.malScore ? `MAL ${d.malScore}` : null,
+    d.pgRating,
     d.aired ? `Aired ${d.aired}` : null,
-    d.subCount ? `SUB ${d.subCount}` : null,
-    d.dubCount ? `DUB ${d.dubCount}` : null,
   ].filter(Boolean);
   for (const c of chipVals) chips.appendChild(el('span', 'chip', c));
 
@@ -1513,7 +1884,7 @@ function renderDetailInfo(d) {
     })();
     rows.appendChild(row);
   }
-  $('detailInfo').hidden = !chipVals.length && !d.synopsis;
+  $('detailInfo').hidden = !chipVals.length && !d.synopsis && $('detailMetaLine').hidden;
 
   // keep the favorite record current with the show's genres — they feed the
   // favourites-based recommendations
@@ -1553,6 +1924,17 @@ async function loadDetailInfo() {
   try {
     const d = await api(`/api/detail?slug=${encodeURIComponent(slug)}`);
     if (state.slug === slug) {
+      // entry points that only know the slug (hero spotlight) open with no
+      // poster — the detail page's own art backfills the card and the backdrop
+      if (d.poster && !state.poster) {
+        state.poster = d.poster;
+        $('detailPoster').src = d.poster;
+        $('detailHero').style.setProperty(
+          '--detail-bg',
+          `url("${d.poster.replace(/"/g, '%22')}")`
+        );
+      }
+      state.audioCounts = { sub: d.subCount || null, dub: d.dubCount || null };
       applyAudioAvail(d);
       renderDetailInfo(d);
       renderRelated(d);
@@ -1592,13 +1974,80 @@ function renderRelated(d) {
     .filter((r) => r.slug !== state.slug)
     .filter(r18Visible);
   state.related = items;
-  if (!items.length) { section.hidden = true; return; }
+  if (!items.length) { section.hidden = true; syncDetailTabs(); return; }
   // horizontal slider — every related entry fits without a "view all" hop
   const slider = $('relSlider');
   slider.innerHTML = '';
-  for (const r of items) slider.appendChild(makeCard(r));
+  for (const r of items) {
+    const card = makeCard(r);
+    card.classList.add('season-card'); // SEASONS-tab styling + "N EPS" badge hook
+    slider.appendChild(card);
+  }
   sweepAdultRatings(slider);
   section.hidden = false;
+  syncDetailTabs();
+}
+
+// "N EPS" badges for the seasons cards: one episodes lookup per slug, so this
+// only runs when the SEASONS tab is actually opened (once per detail visit)
+let relCountSeq = 0;
+async function loadRelCounts() {
+  const seq = ++relCountSeq;
+  const items = (state.related || []).slice(0, 100); // /api/epcounts caps at 100 slugs
+  if (!items.length) return;
+  try {
+    const counts = await epcountsRequest(items.map((r) => r.slug));
+    if (seq !== relCountSeq || !detailAlive()) return; // user moved on
+    const slider = $('relSlider');
+    for (const r of items) {
+      const c = counts[r.slug];
+      if (typeof c !== 'number') continue;
+      const card = slider.querySelector(`[data-slug="${CSS.escape(r.slug)}"]`);
+      if (!card || card.querySelector('.season-badge')) continue;
+      card.querySelector('.card-media').appendChild(el('span', 'season-badge', `${c} EPS`));
+    }
+    state.relCountsLoaded = true;
+  } catch { /* fetch failed → cards stay unbadged */ }
+}
+
+/* ---- detail tabs (//EPISODE / //SEASONS / //RELATED) ----
+   Pure in-page state — never pushed to the nav trail. */
+
+const DETAIL_PANELS = {
+  episodes: 'panelEpisodes',
+  seasons: 'panelSeasons',
+  related: 'panelRelated',
+  details: 'panelDetails', // player screen only (tab hidden on the detail page)
+};
+
+function setDetailTab(name) {
+  if (!DETAIL_PANELS[name]) return;
+  state.detailTab = name;
+  document.querySelectorAll('#detailTabs .detail-tab').forEach((b) =>
+    b.classList.toggle('active', b.dataset.tab === name));
+  for (const [tab, id] of Object.entries(DETAIL_PANELS)) $(id).hidden = tab !== name;
+  if (name === 'seasons' && !state.relCountsLoaded && (state.related || []).length) {
+    loadRelCounts();
+  }
+}
+
+$('detailTabs').addEventListener('click', (e) => {
+  const b = e.target.closest('.detail-tab');
+  if (b && !b.hidden) setDetailTab(b.dataset.tab);
+});
+
+// tabs mirror what actually rendered: no related entries → no SEASONS tab,
+// no recommendations → no RELATED tab, neither → no tab row at all. Under the
+// player the row stays up regardless — //DETAILS is always available there.
+function syncDetailTabs() {
+  const hasRel = !$('relSection').hidden;
+  const hasRec = !$('recSection').hidden;
+  const tabs = $('detailTabs');
+  tabs.querySelector('[data-tab="seasons"]').hidden = !hasRel;
+  tabs.querySelector('[data-tab="related"]').hidden = !hasRec;
+  tabs.hidden = !detailMounted && !hasRel && !hasRec;
+  if ((state.detailTab === 'seasons' && !hasRel) ||
+      (state.detailTab === 'related' && !hasRec)) setDetailTab('episodes');
 }
 
 /* ---- collection pages ----
@@ -1675,6 +2124,7 @@ async function renderRecommendations(d) {
   const seq = ++recSeq;
   const section = $('recSection');
   section.hidden = true;
+  syncDetailTabs();
   const seen = new Set([state.slug]);
   for (const s of Object.keys(getFavs())) seen.add(s);
 
@@ -1700,7 +2150,7 @@ async function renderRecommendations(d) {
     } catch { /* one favorite failing must not sink the section */ }
   }));
   favs.forEach((f) => (f.genres || []).forEach((g) => addGenre(g, 2)));
-  if (seq !== recSeq || state.view !== 'detailView') return;
+  if (seq !== recSeq || !detailAlive()) return;
 
   const genres = [...genreWeight.entries()]
     .sort((a, b) => b[1] - a[1])
@@ -1719,22 +2169,24 @@ async function renderRecommendations(d) {
     if (picked.length >= 6) break;
     try {
       const { results } = await api(`/api/browse?genre=${encodeURIComponent(g)}&sort=most_viewed&page=1`);
-      if (seq !== recSeq || state.view !== 'detailView') return; // user moved on
+      if (seq !== recSeq || !detailAlive()) return; // user moved on
       take(results);
     } catch { /* best-effort */ }
   }
-  if (seq !== recSeq || state.view !== 'detailView' || !picked.length) return;
+  if (seq !== recSeq || !detailAlive() || !picked.length) return;
   const grid = $('recGrid');
   grid.innerHTML = '';
   for (const r of picked) grid.appendChild(makeCard(r));
   sweepAdultRatings(grid);
   section.hidden = false;
+  syncDetailTabs();
 }
 
 function updateDetailFav() {
+  // icon-only bookmark button — state lives in .active + the tooltip
   const on = state.slug && isFav(state.slug);
-  $('favBtn').textContent = on ? '♥ Favorited' : '♡ Favorite';
   $('favBtn').classList.toggle('active', !!on);
+  $('favBtn').title = on ? 'Remove from favorites' : 'Add to favorites';
 }
 
 $('favBtn').addEventListener('click', () => {
@@ -1747,8 +2199,17 @@ async function openDetail(slug, title, poster, onReady) {
   // trail: hopping to a show from anywhere (or from another detail page via
   // recommendations) is a forward hop — back returns to what was on screen
   const from = { view: state.view, slug: state.slug, title: state.title, poster: state.poster };
+  const fromView = state.view;
   if (from.view === 'detailView' && from.slug && from.slug !== slug) {
     pushHist(() => openDetail(from.slug, from.title, from.poster));
+  } else if (fromView === 'playerView') {
+    // leaving the player for a rec/related card: dock playback, and back
+    // returns to the live player (restoreView('playerView') would kill it)
+    pushHist(() => { restoreVideoToPlayer(); showView('playerView'); });
+    if (!minimizeToMini()) {
+      state.playId = (state.playId || 0) + 1; // kill any in-flight resolve
+      stopPlayback();
+    }
   } else if (from.view !== 'detailView') {
     pushHist(() => restoreView(from.view));
   }
@@ -1758,6 +2219,14 @@ async function openDetail(slug, title, poster, onReady) {
   state.epNum = null;
   state.audioAvail = null; // unknown until the detail/episodes data lands
   state.audioProbed = false; // set once the server-list probe answers
+  state.detailTab = 'episodes';
+  state.audioCounts = null;
+  state.relCountsLoaded = false;
+  state.epFilter = '';
+  $('epFindInput').value = '';
+  $('epFindClear').hidden = true;
+  $('epNoMatch').hidden = true;
+  setDetailTab('episodes');
   state.type = prefAudioType();
   syncSwapToggle();
   $('detailTitle').textContent = title;
@@ -1772,6 +2241,7 @@ async function openDetail(slug, title, poster, onReady) {
   renderDetailInfo(null); // hide stale info while loading
   $('recSection').hidden = true; // ...and stale recommendations
   $('relSection').hidden = true; // ...and stale seasons & movies
+  syncDetailTabs(); // tab row matches the (still empty) sections
   loadDetailInfo();
   $('epCount').textContent = '';
   // the back trail (pushHist above) now owns the "Back" button's destination
@@ -1782,7 +2252,7 @@ async function openDetail(slug, title, poster, onReady) {
     const { episodes, audio } = await api(`/api/episodes?slug=${encodeURIComponent(slug)}`);
     state.episodes = episodes;
     if (audio) applyAudioAvail({ audio }); // hide toggles the show doesn't have
-    $('epCount').textContent = `${episodes.length} episodes`;
+    $('epCount').textContent = episodes.length; // the h2 supplies the word EPISODES
     renderEpisodes();
     if (onReady) onReady();
   } catch (e) {
@@ -1809,23 +2279,65 @@ function renderEpisodes() {
   const prog = getJSON()[state.slug] || {};
   const watched = prog.watched || [];
   for (const ep of state.episodes) {
-    const btn = el('button', 'ep-btn', ep.num);
+    const btn = el('button', 'ep-btn');
+    btn.dataset.num = ep.num; // FIND EP filter matches on this
+    const num = el('span', 'ep-num', ep.num);
+    btn.appendChild(num);
+    btn.appendChild(el('span', 'ep-type', state.type.toUpperCase()));
     if (ep.num === String(state.epNum)) btn.classList.add('current');
     // the check is independent of "current" — the episode you just played is
     // both, and hiding its check made it look unwatched
     if (watched.includes(String(ep.num))) {
       btn.classList.add('watched');
-      btn.textContent = `✓ ${ep.num}`;
+      num.textContent = `✓ ${ep.num}`;
     }
     if (ep.dead) {
       // every embed for this episode was dead — warn before the click, not after
       btn.classList.add('dead');
       btn.title = 'This episode is unavailable at the source (all embeds dead). Click to retry anyway.';
     }
-    btn.addEventListener('click', () => startPlayback(ep.num, state.type));
+    btn.addEventListener('click', () =>
+      startPlayback(ep.num, state.type, { push: state.view !== 'playerView' }));
     grid.appendChild(btn);
   }
+  renderMetaLine(); // refresh the "EP n" segment after a playback round trip
+  applyEpFilter();
 }
+
+/* ---- FIND EP search: digits only, prefix/contains match, leading zeros
+   ignored on both sides. Hides non-matching tiles in place so watched /
+   current / dead classes and tooltips are never rebuilt. Skeleton tiles
+   (.sk-ep) don't carry .ep-btn and are never filtered. */
+function normalizeEpNum(s) {
+  return String(s).replace(/\D/g, '').replace(/^0+(?=\d)/, '');
+}
+
+function applyEpFilter() {
+  const q = normalizeEpNum(state.epFilter || '');
+  const grid = $('epGrid');
+  const filtering = q !== '' && !!grid.querySelector('.ep-btn');
+  let visible = 0;
+  for (const btn of grid.children) {
+    if (!btn.classList.contains('ep-btn')) continue;
+    const hit = !filtering || normalizeEpNum(btn.dataset.num).includes(q);
+    btn.hidden = !hit;
+    if (hit) visible++;
+  }
+  $('epNoMatch').hidden = !(filtering && visible === 0);
+  $('epFindClear').hidden = !state.epFilter;
+}
+
+$('epFindInput').addEventListener('input', () => {
+  state.epFilter = $('epFindInput').value;
+  applyEpFilter();
+});
+
+$('epFindClear').addEventListener('click', () => {
+  $('epFindInput').value = '';
+  state.epFilter = '';
+  applyEpFilter();
+  $('epFindInput').focus();
+});
 
 // every back button (detail, player, collection) unwinds the same trail the
 // Android hardware back walks
@@ -1899,24 +2411,46 @@ function saveProgress(final = false) {
 
 // opts.push: false for in-player hops (auto-next/hot swap) — those
 // must not stack trail entries
+
+// the episode grid + info block living under the player video: filled here
+// when playback starts without a detail visit. slotFillSlug stops a re-entry
+// (failover / auto-next / swap) from re-fetching the same show.
+let slotFillSlug = null;
+async function fillPlayerDetail() {
+  if (detailMounted && state.episodes.length) return; // came from the detail page
+  if (slotFillSlug === state.slug) return; // already fetched / in flight
+  const slug = state.slug;
+  slotFillSlug = slug;
+  $('detailTitle').textContent = state.title || ''; // openDetail isn't in this path
+  try {
+    const { episodes, audio } = await api(`/api/episodes?slug=${encodeURIComponent(slug)}`);
+    if (state.slug !== slug) return;
+    state.episodes = episodes;
+    if (audio) applyAudioAvail({ audio });
+    $('epCount').textContent = episodes.length;
+    renderEpisodes();
+    loadDetailInfo(); // info block + related + recs into the slot
+  } catch { /* slot stays empty; playback itself is unaffected */ }
+}
+
 async function startPlayback(epNum, type, opts = {}) {
   stopPlayback();
   state.epNum = String(epNum);
   state.type = type;
   syncSwapToggle();
+  syncCurrentEp(); // "EP n" line + .current tile track inline switches too
   if (opts.push !== false) {
     pushHist(() => { stopPlayback(); showView('detailView'); renderEpisodes(); });
   }
   const playId = (state.playId = (state.playId || 0) + 1);
+  // servers already tried for THIS playback — the hls error handler walks
+  // state.sources.servers to fail over without revisiting a dead one
+  state.triedServers = opts.tried || (opts.server ? [opts.server] : []);
+  state.stallLog = [];
   showView('playerView');
-  // entering the player without a detail visit (continue-watching row, the
-  // profile's Watching tab) leaves availability unknown — probe it in the
-  // background so a sub-only show's DUB toggle disappears mid-session
-  if (!state.audioAvail) {
-    api(`/api/episodes?slug=${encodeURIComponent(state.slug)}`)
-      .then((d) => { if (d.audio) applyAudioAvail({ audio: d.audio }); })
-      .catch(() => {});
-  }
+  // entered without a detail visit (defensive — every entry currently goes
+  // through openDetail's onReady): fill the slot's grid/info in the background
+  if (!state.audioAvail || !state.episodes.length) fillPlayerDetail();
   $('playerTitle').textContent = state.title;
   $('playerEp').textContent = `EP ${epNum} (${type.toUpperCase()})`;
   $('playerLoading').hidden = false;
@@ -1932,36 +2466,42 @@ async function startPlayback(epNum, type, opts = {}) {
       $('playerStatus').textContent = `Resolving sources… ${Math.round((Date.now() - t0) / 1000)}s`;
     }
   }, 500);
-  $('playerStatus').textContent = 'Resolving sources…';
+  $('playerStatus').textContent = opts.src ? 'Switching server…' : 'Resolving sources…';
 
   let src;
-  try {
-    src = await api(
-      `/api/sources?slug=${encodeURIComponent(state.slug)}&ep=${encodeURIComponent(epNum)}&type=${type}`
-    );
-  } catch (e) {
-    if (state.playId !== playId) return;
-    // auto-fallback to the other audio type; adopt fb as the requested type so
-    // the post-resolve audioType check below doesn't toast about it a second time
-    const fb = e.fallbackType || (type === 'sub' ? 'dub' : 'sub');
+  if (opts.src) {
+    // pre-resolved by the server-dropdown switch — skip the lookup entirely
+    src = opts.src;
+  } else {
     try {
       src = await api(
-        `/api/sources?slug=${encodeURIComponent(state.slug)}&ep=${encodeURIComponent(epNum)}&type=${fb}`
+        `/api/sources?slug=${encodeURIComponent(state.slug)}&ep=${encodeURIComponent(epNum)}&type=${type}` +
+          (opts.server ? `&server=${encodeURIComponent(opts.server)}` : '')
       );
-      toast(`No ${type.toUpperCase()} source — playing ${fb.toUpperCase()} instead`);
-      type = fb;
-      state.type = fb;
-      syncSwapToggle(); // toggle + ep label now show the track actually playing
-      $('playerEp').textContent = `EP ${epNum} (${fb.toUpperCase()})`;
-    } catch (e2) {
+    } catch (e) {
       if (state.playId !== playId) return;
-      clearInterval(tick);
-      // the scraper's message already says sub+dub were tried and that the
-      // embeds are dead/removed — show it plainly instead of stacking text
-      $('playerStatus').textContent = e2.message;
-      $('playerStatus').textContent += ' — pick another episode or a different show.';
-      toast(e2.message, true);
-      return;
+      // auto-fallback to the other audio type; adopt fb as the requested type so
+      // the post-resolve audioType check below doesn't toast about it a second time
+      const fb = e.fallbackType || (type === 'sub' ? 'dub' : 'sub');
+      try {
+        src = await api(
+          `/api/sources?slug=${encodeURIComponent(state.slug)}&ep=${encodeURIComponent(epNum)}&type=${fb}`
+        );
+        toast(`No ${type.toUpperCase()} source — playing ${fb.toUpperCase()} instead`);
+        type = fb;
+        state.type = fb;
+        syncSwapToggle(); // toggle + ep label now show the track actually playing
+        $('playerEp').textContent = `EP ${epNum} (${fb.toUpperCase()})`;
+      } catch (e2) {
+        if (state.playId !== playId) return;
+        clearInterval(tick);
+        // the scraper's message already says sub+dub were tried and that the
+        // embeds are dead/removed — show it plainly instead of stacking text
+        $('playerStatus').textContent = e2.message;
+        $('playerStatus').textContent += ' — pick another episode or a different show.';
+        toast(e2.message, true);
+        return;
+      }
     }
   }
   clearInterval(tick);
@@ -1977,6 +2517,7 @@ async function startPlayback(epNum, type, opts = {}) {
     toast(`No ${type.toUpperCase()} source for this episode — playing ${src.audioType.toUpperCase()}`);
   }
   $('providerLabel').textContent = `via ${src.provider || 'hianime'}`;
+  updateServerSel(src);
   $('playerLoading').hidden = true;
 
   if (src.hls === false || !Hls.isSupported()) {
@@ -1989,15 +2530,48 @@ async function startPlayback(epNum, type, opts = {}) {
       fragLoadingTimeOut: 30000,
     });
     state.hls = hls;
+    let recovers = 0; // in-place recovery budget before a server hop
     hls.on(Hls.Events.MANIFEST_PARSED, () => {
       buildQualityMenu(hls);
       video.play().catch(() => {});
     });
     hls.on(Hls.Events.ERROR, (_, data) => {
-      if (data.fatal) {
-        $('playerStatus').textContent = 'Playback error — try another episode or quality.';
-        toast('Playback error: ' + data.details, true);
+      if (!data.fatal) {
+        if (/stalled/i.test(data.details)) recordStall(hls);
+        return;
       }
+      // Transient upstream failures (proxy 500s, dropped sockets) used to hop
+      // servers immediately — the re-resolve + re-buffering between hops read
+      // as an endless "buffer loop". hls.js can recover both error classes in
+      // place; only fail over once recovery is genuinely exhausted.
+      if (data.type === Hls.ErrorTypes.NETWORK_ERROR && recovers < 2) {
+        recovers++;
+        hls.startLoad();
+        return;
+      }
+      if (data.type === Hls.ErrorTypes.MEDIA_ERROR && recovers < 2) {
+        recovers++;
+        hls.recoverMediaError();
+        return;
+      }
+      // failover: this server's stream is dead — hand playback to the next
+      // provider the episode offers instead of leaving a stuck player
+      const names = (state.sources && state.sources.servers) || [];
+      const cur = state.sources && state.sources.provider;
+      const tried = state.triedServers || [];
+      const next = names.find((n) => n !== cur && !tried.includes(n));
+      if (next && state.playId === playId) {
+        saveProgress(); // resume at the same spot on the new server
+        toast(`Server ${cur || 'stream'} failed — trying ${next}`);
+        startPlayback(state.epNum, state.type, {
+          push: false,
+          server: next,
+          tried: [...tried, cur].filter(Boolean),
+        });
+        return;
+      }
+      $('playerStatus').textContent = 'Playback error — try another episode or quality.';
+      toast('Playback error: ' + data.details, true);
     });
     hls.loadSource(src.proxiedUrl);
     hls.attachMedia(video);
@@ -2031,6 +2605,27 @@ async function startPlayback(epNum, type, opts = {}) {
   setupWatchers(src);
 }
 
+// repeated stalling while a quality is LOCKED means the stream is too heavy
+// for the connection — step down one rung. In Auto mode this is a no-op:
+// hls.js's adaptive bitrate already picks the level the bandwidth supports.
+function recordStall(hls) {
+  const now = Date.now();
+  state.stallLog = (state.stallLog || []).filter((t) => now - t < 25000);
+  state.stallLog.push(now);
+  if (state.stallLog.length < 3) return; // 3 stalls inside 25s = suffering
+  state.stallLog = [];
+  if (hls.autoLevelEnabled) return;
+  const levels = hls.levels
+    .map((l, i) => ({ h: l.height, i }))
+    .sort((a, b) => b.h - a.h);
+  const lower = levels[levels.findIndex((l) => l.i === hls.currentLevel) + 1];
+  if (lower && lower.h) {
+    hls.currentLevel = lower.i;
+    $('qualitySel').value = String(lower.i);
+    toast(`Buffering — lowered quality to ${lower.h}p`);
+  }
+}
+
 function buildQualityMenu(hls) {
   const sel = $('qualitySel');
   sel.innerHTML = '<option value="-1">Auto</option>';
@@ -2058,6 +2653,7 @@ function buildQualityMenu(hls) {
 
 $('qualitySel').addEventListener('change', (e) => {
   if (state.hls) state.hls.currentLevel = parseInt(e.target.value, 10);
+  state.stallLog = []; // fresh buffering allowance for the quality just chosen
 });
 
 function setupWatchers(src) {
@@ -2221,7 +2817,14 @@ $('watchAdBtn').addEventListener('click', () => {
       btn.disabled = false;
       btn.textContent = 'Watch ad — +45 min';
     }, 45000);
-    window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'showAd', seq }));
+    // adminHint: the shell prefers its own /api/auth/status check, but keeps
+    // this as a fallback so the admin still gets the test ad if that fetch
+    // ever fails (see showRewardedAd in App.tsx)
+    window.ReactNativeWebView.postMessage(JSON.stringify({
+      type: 'showAd',
+      seq,
+      adminHint: !!(lastSyncStatus && lastSyncStatus.isAdmin),
+    }));
   }
 });
 
@@ -2263,6 +2866,20 @@ function syncSwapToggle() {
       x.hidden = !!(state.audioAvail && !state.audioAvail[t]);
     });
   }
+  renderAudioPills(); // detail-page pills carry episode counts
+}
+
+/* detail-page audio pills read "SUB 1180 EP": source counts when /api/detail
+   answered, else the episode-list length when that track is available, else
+   the bare label while nothing is known yet */
+function renderAudioPills() {
+  const c = state.audioCounts || {};
+  document.querySelectorAll('#typeToggle button').forEach((b) => {
+    const t = b.dataset.type;
+    const n = c[t] || (state.audioAvail && state.audioAvail[t] && state.episodes.length
+      ? state.episodes.length : null);
+    b.textContent = n ? `${t.toUpperCase()} ${n} EP` : t.toUpperCase();
+  });
 }
 document.querySelectorAll('#swapToggle button').forEach((b) => {
   b.addEventListener('click', () => {
@@ -2274,6 +2891,47 @@ document.querySelectorAll('#swapToggle button').forEach((b) => {
     const p = prefs(); p.lastType = type; setPrefs(p);
     startPlayback(state.epNum, type, { push: false });
   });
+});
+
+/* ---------------- server dropdown (stream providers) ---------------- */
+
+// populate from the resolution result — every new source resolution refreshes
+// it (audio fallback re-queries included); hidden when there's no choice
+function updateServerSel(src) {
+  const sel = $('serverSel');
+  const names = src.servers || [];
+  sel.innerHTML = '';
+  for (const n of names) {
+    const opt = el('option', null, n);
+    opt.value = n;
+    sel.appendChild(opt);
+  }
+  if (src.provider && names.includes(src.provider)) sel.value = src.provider;
+  sel.hidden = names.length < 2;
+}
+
+$('serverSel').addEventListener('change', async (e) => {
+  const want = e.target.value;
+  const cur = state.sources && state.sources.provider;
+  if (!state.epNum || state.view !== 'playerView' || !want || want === cur) return;
+  const epNum = state.epNum;
+  const type = state.type;
+  const playId = state.playId; // a newer playback wins; drop this switch then
+  toast(`Loading ${want}…`);
+  try {
+    // resolve the new server WITHOUT touching the playing stream — only
+    // commit the switch once the replacement stream is in hand
+    const src = await api(
+      `/api/sources?slug=${encodeURIComponent(state.slug)}&ep=${encodeURIComponent(epNum)}` +
+        `&type=${type}&server=${encodeURIComponent(want)}`
+    );
+    if (state.playId !== playId || state.view !== 'playerView') return;
+    saveProgress(); // remember the position in the outgoing server's stream
+    startPlayback(epNum, type, { push: false, src });
+  } catch (err) {
+    toast(`${want}: ${err.message || err}`, true);
+    e.target.value = cur || ''; // stay on the working stream
+  }
 });
 
 $('autoNextBtn').addEventListener('click', (e) => {
@@ -2346,13 +3004,16 @@ function renderSyncUI(s) {
   // those run unlocked, offline.
   const gate = $('loginGate');
   const wasLocked = !gate.hidden;
-  if (s.configured && s.portAvailable !== false && !s.signedIn) {
+  const guest = isGuest();
+  document.body.classList.toggle('guest', guest);
+  if (s.configured && s.portAvailable !== false && !s.signedIn && !guest) {
     gate.hidden = false;
     document.body.classList.add('auth-locked');
   } else {
     gate.hidden = true;
     document.body.classList.remove('auth-locked');
     $('loginStatus').textContent = '';
+    if (s.signedIn) setGuest(false); // any session ends guest mode (idempotent)
     if (wasLocked && s.signedIn) {
       // fresh sign-in from the gate — land on the home screen instead of
       // whatever stale view was sitting behind it
@@ -2372,6 +3033,9 @@ function renderSyncUI(s) {
     hint.textContent = s.lastError
       ? `Signed in as ${s.email} — retrying (${s.lastError})`
       : `Signed in as ${s.email}. Favorites, history and settings sync automatically; offline changes catch up when you're back online.`;
+  } else if (guest) {
+    statusText.textContent = 'Off';
+    hint.textContent = 'Guest mode — everything stays on this device. Sign in with Google any time to sync.';
   } else {
     statusText.textContent = 'Off';
     hint.textContent = s.lastError || 'Sign in with Google to keep favorites, history and settings in sync across your devices. Everything keeps working offline without an account.';
@@ -2402,11 +3066,116 @@ async function pollSync() {
   } catch { /* server hiccup; next poll retries */ }
 }
 
+/* native Google sign-in (Android): the Expo shell opens the Credential Manager
+   account picker and answers with a 'googleIdToken' message (handled in the
+   shell listener at the bottom of this file). No browser tab is involved. */
+let googleSignInSeq = 0; // ignores stale replies after a retry
+let signInReplyWaiter = null; // settles the in-flight request's promise
+let signInReplyTimer = null; // safety net if the shell never answers
+
+function nativeGoogleSignIn(timeoutMs = 120000) {
+  return new Promise((resolve) => {
+    const seq = ++googleSignInSeq;
+    signInReplyWaiter = (reply) => {
+      clearTimeout(signInReplyTimer);
+      signInReplyWaiter = null;
+      resolve(reply);
+    };
+    // if the shell never answers (dropped request, killed process) give up
+    // quietly — a late reply is dropped by the seq check, and no browser tab
+    // is stacked behind an open account sheet
+    signInReplyTimer = setTimeout(() => {
+      signInReplyWaiter = null;
+      resolve({ ok: false, timeout: true });
+    }, timeoutMs);
+    window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'googleSignIn', seq }));
+  });
+}
+
+/* zero Google accounts on the device → open the system "add account" screen.
+   It slides over the app (same task), so nothing is closed; the shell answers
+   with an 'addAccountReply' message. Returning to the app re-opens the picker
+   via the visibilitychange listener below. */
+let googleAddSeq = 0;
+let addReplyWaiter = null;
+let addAccountPending = false; // setup screen is up — retry sign-in on return
+
+function nativeAddGoogleAccount(timeoutMs = 15000) {
+  return new Promise((resolve) => {
+    const seq = ++googleAddSeq;
+    let timer = null;
+    addReplyWaiter = (reply) => {
+      clearTimeout(timer);
+      addReplyWaiter = null;
+      resolve(reply);
+    };
+    timer = setTimeout(() => {
+      addReplyWaiter = null;
+      resolve({ ok: false, error: 'account setup did not open' });
+    }, timeoutMs);
+    window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'addGoogleAccount', seq }));
+  });
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden || !addAccountPending) return;
+  addAccountPending = false; // one auto-retry per opened setup screen
+  if ($('loginGate').hidden) return; // gate already gone — nothing to sign into
+  startSignInFlow($('loginBtn'), { auto: true });
+});
+
 /* shared sync actions — the settings row and the profile page both use these */
 
-async function startSignInFlow(btn) {
+async function startSignInFlow(btn, opts = {}) {
   btn.disabled = true;
   try {
+    // Android: sign-in is ONLY the native Google account picker — no browser
+    // surface. A picker failure (dismissed, no accounts, no Play services)
+    // surfaces as a toast; tapping again re-opens the picker.
+    if (IS_ANDROID && window.ReactNativeWebView) {
+      const reply = await nativeGoogleSignIn();
+      if (reply.ok && reply.token) {
+        await api('/api/auth/google', { idToken: reply.token });
+        $('loginStatus').textContent = 'Signed in!';
+        toast('Signed in — sync started');
+        pollSync(); // drop the gate now — don't wait for the first poll tick
+        return;
+      }
+      if (reply.timeout) return; // sheet open / shell unresponsive — just stop
+      const why = reply.error || 'account picker was dismissed';
+      if (reply.code === 'NO_CREDENTIAL') {
+        // the device has zero Google accounts — the picker can never open.
+        // Send the user to the system "add account" screen (it slides OVER the
+        // app); when they come back, visibilitychange re-runs this flow and
+        // the picker opens with the fresh account.
+        if (opts.auto) {
+          // the post-setup auto-retry found no account either (user backed
+          // out) — stop here so the setup screen can't reopen in a loop; the
+          // next manual tap gets it again
+          $('loginStatus').textContent = 'No Google account yet — add one and tap Sign in.';
+          toast('No Google account on this device', true);
+          pollSync();
+          return;
+        }
+        $('loginStatus').textContent = 'No Google account on this device — opening account setup…';
+        const started = await nativeAddGoogleAccount();
+        if (started.ok) {
+          addAccountPending = true;
+        } else {
+          $('loginStatus').textContent = 'Sign-in failed: ' + (started.error || 'account setup could not open');
+          toast('Sign-in failed: ' + (started.error || 'account setup could not open'), true);
+        }
+        pollSync();
+        return;
+      }
+      // persistent feedback on the gate itself — a 2s toast reads as "dead button"
+      $('loginStatus').textContent = 'Sign-in failed: ' + why;
+      toast('Sign-in failed: ' + why, true);
+      pollSync();
+      return;
+    }
+    // Desktop: the OAuth URL opens in the app's own browser window (a popup
+    // where Google lists the accounts) and the loopback closes it.
     const r = await api('/api/auth/start', {});
     if (!r.ok) throw new Error(r.error || 'Sign-in could not start');
     // the UI owns opening the auth page: desktop routes window.open into the
@@ -2460,6 +3229,7 @@ async function signOutFlow(btn) {
   if (btn) btn.disabled = true;
   try {
     const s = await api('/api/auth/logout', {});
+    setGuest(false); // sign-out returns to the gate — the guest choice is re-picked there
     renderSyncUI(s);
     renderProfile(s);
     toast('Signed out — your data stays on this device');
@@ -2476,6 +3246,17 @@ $('signOutBtn').addEventListener('click', (e) => signOutFlow(e.currentTarget));
 $('profileSignIn').addEventListener('click', (e) => startSignInFlow(e.currentTarget));
 $('loginBtn').addEventListener('click', (e) => startSignInFlow(e.currentTarget));
 $('profileSignOut').addEventListener('click', (e) => signOutFlow(e.currentTarget));
+
+$('loginGuestBtn').addEventListener('click', () => {
+  setGuest(true);
+  // renderSyncUI's change-guard (stringified server status) would early-return
+  // here — the gate block sits ABOVE the guard, so reset the guard, then
+  // re-render to hide the gate and refresh the settings row immediately.
+  lastSyncRender = '';
+  if (lastSyncStatus) renderSyncUI(lastSyncStatus);
+  showView('homeView');
+  toast('Guest mode — your data stays on this device');
+});
 
 /* ---- edit profile ----
    Everything edits prefs.profile: name/avatar/bg color/hide-email. Saving goes
@@ -2637,7 +3418,7 @@ function renderProfile(s) {
     fallback.hidden = false;
   }
   const prof = profileEdit();
-  $('profileName').textContent = signedIn ? (prof.name || s.name || s.email) : 'Not signed in';
+  $('profileName').textContent = signedIn ? (prof.name || s.name || s.email) : (isGuest() ? 'Guest' : 'Not signed in');
   $('profileEmail').textContent = signedIn && !prof.hideEmail && s.name ? s.email : '';
   $('profileVerified').hidden = !signedIn;
   // the card's background color is a profile edit (null = theme default)
@@ -2659,7 +3440,11 @@ function renderProfile(s) {
       ? `Last synced ${fmtSyncWhen(s.lastSync)}`
       : 'Your data mirrors to your account whenever this device is online.';
   } else {
-    detail.textContent = s.lastError ? `Last attempt failed — ${s.lastError}` : 'Sign in to keep everything in sync across your devices.';
+    detail.textContent = s.lastError
+      ? `Last attempt failed — ${s.lastError}`
+      : isGuest()
+      ? 'You’re browsing as a guest — favorites, history and settings stay on this device. Sign in to mirror them across devices.'
+      : 'Sign in to keep everything in sync across your devices.';
   }
   $('profileSignIn').hidden = !s || !s.configured || signedIn;
   $('editProfileBtn').hidden = !signedIn;
@@ -2790,6 +3575,7 @@ document.addEventListener('keydown', (e) => {
 
 /* ---------------- version + in-app updates ---------------- */
 
+let bootVersion = null; // /api/version result — drives the "What's new" gate
 async function loadVersion() {
   try {
     const { version, backupDir } = await api('/api/version');
@@ -2798,6 +3584,10 @@ async function loadVersion() {
     if (backupDir) {
       $('backupHint').textContent =
         `Settings, favorites and history are backed up to ${backupDir} — they survive updates and reinstalls.`;
+    }
+    if (version) {
+      bootVersion = version;
+      maybeShowWhatsNew();
     }
   } catch { /* cosmetic only */ }
 }
@@ -2809,6 +3599,12 @@ let lastUpdate = null; // full status object (carries apkPath on Android)
 
 function renderUpdateUI(u) {
   updateState = u.disabled ? 'idle' : u.state;
+  // Play-distributed build: Google Play policy forbids in-app update flows, so
+  // the server reports the updater disabled there — drop the whole section.
+  // (disabled without Android = desktop dev build, which keeps the row.)
+  const updatesGone = !!u.disabled && IS_ANDROID;
+  $('updatesRow').hidden = updatesGone;
+  $('updatesSep').hidden = updatesGone;
   const banner = $('updateBanner');
   const visible = !updateDismissed && ['available', 'downloading', 'ready'].includes(u.state);
   banner.hidden = !visible;
@@ -2944,6 +3740,17 @@ window.addEventListener('message', (ev) => {
       toast('Install failed: ' + (msg.error || 'unknown error'), true);
     } else if (msg && msg.type === 'shellToast') {
       toast(String(msg.text || ''), !!msg.error);
+    } else if (msg && msg.type === 'googleIdToken') {
+      // the shell's answer to a native sign-in request; stale replies (an
+      // older request that settled after a retry) are dropped — a newer
+      // request owns the waiter now
+      if (msg.seq && msg.seq !== googleSignInSeq) return;
+      if (signInReplyWaiter) signInReplyWaiter(msg);
+    } else if (msg && msg.type === 'addAccountReply') {
+      // the shell's answer to an "open account setup" request; stale replies
+      // dropped by seq, like googleIdToken above
+      if (msg.seq && msg.seq !== googleAddSeq) return;
+      if (addReplyWaiter) addReplyWaiter(msg);
     } else if (msg && msg.type === 'adReward') {
       // the shell's answer to a rewarded-ad request (watch-up overlay refill);
       // stale replies (an older request that settled after a retry) are
@@ -2973,6 +3780,7 @@ $('tosAccept').addEventListener('click', () => {
   setPrefs(p);
   $('tosOverlay').hidden = true;
   toast('Welcome to AniNinja');
+  maybeShowWhatsNew(); // a fresh update that still owed the T&C shows both, in order
 });
 $('tosDecline').addEventListener('click', () => {
   if (tosDeclined) return;
@@ -2987,6 +3795,62 @@ function showTosGate() {
   if (prefs().tosAccepted) return;
   $('tosOverlay').hidden = false;
 }
+
+/* ---- "What's new" welcome screen ----
+   Shown ONCE per installed version — and only after an UPDATE: prefs()
+   .lastWhatsNew only exists on devices that already ran some earlier version,
+   so a first install (nothing to update from) never sees it. The version
+   compared is /api/version, which on Android is the zip-stamped desktop
+   version — so a sync-node.sh-only update (no new APK) still counts. */
+const WHATS_NEW = {
+  '1.2.6': {
+    features: [
+      'Native Google sign-in — pick your account right in the app, no browser tab',
+      'No Google account on the device yet? The app opens account setup for you, then signs you in when you return',
+      'Google "G" and guest icons on the sign-in buttons',
+    ],
+    fixes: [
+      'Google sign-in failures now explain what actually went wrong instead of a bare "400"',
+    ],
+  },
+};
+
+function maybeShowWhatsNew() {
+  if (!prefs().tosAccepted || !bootVersion) return; // T&C and version must land first
+  // device-local (never synced): the welcome belongs to THIS device's update —
+  // a synced prefs blob would mark the user's other devices as already-welcomed
+  const seen = localStorage.getItem(WN_KEY);
+  if (seen === bootVersion) return; // already welcomed for this version
+  localStorage.setItem(WN_KEY, bootVersion);
+  if (!seen) return; // fresh install — no previous version to update from
+  // render: features + fixes for this version, falling back to a generic note
+  const notes = WHATS_NEW[bootVersion];
+  const list = $('wnList');
+  list.textContent = '';
+  const group = (heading, iconName, cls, items) => {
+    if (!items || !items.length) return;
+    const g = el('div', 'wn-group');
+    g.appendChild(el('div', 'wn-heading', heading));
+    for (const text of items) {
+      const item = el('div', 'wn-item ' + cls);
+      item.innerHTML = icon(iconName);
+      item.appendChild(el('span', '', text));
+      g.appendChild(item);
+    }
+    list.appendChild(g);
+  };
+  group('New', 'plus', '', notes?.features);
+  group('Fixed', 'wrench', 'fix', notes?.fixes);
+  if (!list.children.length) {
+    list.appendChild(el('div', 'wn-item', 'This update brings stability and playback improvements.'));
+  }
+  $('wnVersion').textContent = `You've updated to v${bootVersion}`;
+  $('whatsNewOverlay').hidden = false;
+}
+
+$('wnClose').addEventListener('click', () => {
+  $('whatsNewOverlay').hidden = true;
+});
 
 /* ---- settings: download my data ---- */
 
@@ -3019,7 +3883,7 @@ $('synopsisToggle').addEventListener('click', () => {
 });
 // a resize changes how many lines the synopsis needs — re-decide the toggle
 window.addEventListener('resize', () => {
-  if (!$('detailView').hidden) syncSynopsisToggle();
+  if (!$('detailView').hidden || detailMounted) syncSynopsisToggle();
 });
 
 /* ---------------- feedback board ---------------- */
@@ -3094,6 +3958,16 @@ function renderFeedback() {
 }
 
 async function loadFeedback() {
+  // feedback posts/votes are attributed to the Google account server-side —
+  // guests have no token, so every call would 401. Guard instead of erroring.
+  if (isGuest()) {
+    $('feedbackList').innerHTML = '';
+    $('feedbackComposer').hidden = true;
+    $('newFeedbackBtn').hidden = true;
+    $('feedbackEmpty').hidden = false;
+    $('feedbackEmpty').textContent = 'Sign in with Google to browse and post feedback.';
+    return;
+  }
   const list = $('feedbackList');
   list.innerHTML = '';
   list.appendChild(el('p', 'hint', 'Loading…'));
@@ -3191,9 +4065,11 @@ function hideSplash() {
   showTosGate(); // first launch only — overlays the boot splash until accepted
   applySidebar();
   initBrowseUI();
+  buildLoginCollage(); // gate backdrop posters (shown/hidden by pollSync)
   renderNotifPanel(); // restore badge/panel state saved before the last close
   renderContinue();
   await loadRecent(); // home is ready once the recently-updated grid lands
+  loadHero(); // hero spotlight carousel (best-effort, server-cached 30 min)
   loadUpcoming(); // marquee + Coming soon grid (best-effort, cached 30 min)
   hideSplash();
   loadVersion();

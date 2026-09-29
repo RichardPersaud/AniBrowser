@@ -154,7 +154,22 @@ function Shell() {
   // The ad object is single-use, so a fresh one is built per request; only
   // one ad round-trip may be in flight at a time.
   const adBusy = useRef(false);
-  const showRewardedAd = useCallback((seq?: number) => {
+  // Admin accounts (the developer) get ONLY Google's test ad unit — the
+  // production unit never loads for them, so testing can't produce real
+  // impressions/clicks on the live unit (an AdMob suspension risk). The
+  // authoritative answer is /api/auth/status (same source the UI's status row
+  // uses); the web UI also passes adminHint in case that fetch fails.
+  const adUnitFor = useCallback(async (adminHint?: boolean): Promise<string> => {
+    try {
+      const r = await fetch(`http://127.0.0.1:${port}/api/auth/status`);
+      const s = await r.json();
+      if (s?.isAdmin) return TEST_REWARDED_AD_UNIT_ID;
+    } catch {
+      // fall through to the web UI's hint
+    }
+    return adminHint ? TEST_REWARDED_AD_UNIT_ID : REWARDED_AD_UNIT_ID;
+  }, [port]);
+  const showRewardedAd = useCallback((seq?: number, adminHint?: boolean) => {
     const web = webRef.current;
     if (!web) return;
     // a round-trip is already in flight — answer immediately so the web UI's
@@ -204,8 +219,10 @@ function Shell() {
       // arrives via the ERROR event above, NOT as a rejected promise
       ad.load();
     };
-    attempt(REWARDED_AD_UNIT_ID);
-  }, []);
+    // resolve the unit (admin → test-only, no failover needed since the test
+    // unit always fills), then start the round-trip
+    adUnitFor(adminHint).then((unitId) => attempt(unitId));
+  }, [adUnitFor]);
 
   // the Google Mobile Ads SDK needs one init before the first ad request —
   // fire-and-forget at shell boot so the first "+45 minutes" tap is instant
@@ -268,8 +285,10 @@ function Shell() {
   if (phase === 'ready' && port != null) {
     return (
       <View style={styles.root}>
-        <StatusBar barStyle="light-content" backgroundColor="#0b0e14" />
-        {/* the app draws edge-to-edge; keep the web UI below the status bar */}
+        <StatusBar barStyle="light-content" />
+        {/* the app draws edge-to-edge; pad the system bars out — StatusBar's
+            backgroundColor prop routes through the deprecated window APIs that
+            Play flags, and on Android 15+ the bars are transparent anyway */}
         <View style={{ height: insets.top, backgroundColor: '#0b0e14' }} />
         {/* alignSelf:stretch is load-bearing — root centers children, and a bare
             View wrapping the WebView has no intrinsic width, so it (and the
@@ -307,8 +326,8 @@ function Shell() {
             try {
               const msg = JSON.parse(nativeEvent.data);
               if (msg.type === 'videoActive') {
-                // only forwarded for PiP docking — the sensor never touches the
-                // app UI, and the app UI never rotates
+                // only forwarded for PiP docking — MainActivity reads it in
+                // onUserLeaveHint to auto-dock on home/recents
                 AniBrowserNode.setVideoActive(!!msg.active);
               } else if (msg.type === 'enterPip') {
                 // sidebar tap while a video is playing — dock it into
@@ -330,13 +349,19 @@ function Shell() {
                 });
               } else if (msg.type === 'showAd') {
                 // rewarded ad round-trip for the watch-up overlay's refill
-                // button — outcome comes back as an 'adReward' message
-                showRewardedAd(typeof msg.seq === 'number' ? msg.seq : undefined);
+                // button — outcome comes back as an 'adReward' message.
+                // adminHint: the web UI's view of /api/auth/status.isAdmin
+                showRewardedAd(
+                  typeof msg.seq === 'number' ? msg.seq : undefined,
+                  !!msg.adminHint
+                );
               } else if (msg.type === 'openExternal') {
-                // cloud sign-in: Google OAuth (and its loopback callback) must
-                // run outside this WebView — Google rejects OAuth in embedded
-                // WebViews, so use a Custom Tab: an in-app browser surface
-                // with the app's own toolbar, no app switch to Chrome proper
+                // cloud sign-in fallback: Google OAuth (and its loopback
+                // callback) must run outside this WebView — Google rejects
+                // OAuth in embedded WebViews, so use a Custom Tab: an in-app
+                // browser surface with the app's own toolbar. Only reached on
+                // Android when the native account picker fails (no GMS, no
+                // credentials, user dismissed the sheet)
                 WebBrowser.openBrowserAsync(String(msg.url ?? ''))
                   .catch(() => {})
                   .then(() => {
@@ -345,6 +370,29 @@ function Shell() {
                     webRef.current?.injectJavaScript(
                       'if (typeof pollSync === "function") pollSync(); true;'
                     );
+                  });
+              } else if (msg.type === 'googleSignIn') {
+                // native Google account picker (Credential Manager) — the
+                // primary sign-in path, no browser tab. seq-stamped reply so a
+                // stale resolution can't settle a newer request
+                AniBrowserNode.googleSignIn()
+                  .then((token) => {
+                    webPostMessage(webRef.current, { type: 'googleIdToken', ok: true, token, seq: msg.seq });
+                  })
+                  .catch((e) => {
+                    // code matters: the web UI keys its "add an account"
+                    // follow-up on NO_CREDENTIAL
+                    webPostMessage(webRef.current, { type: 'googleIdToken', ok: false, error: String(e?.message ?? e), code: String((e as {code?: unknown})?.code ?? ''), seq: msg.seq });
+                  });
+              } else if (msg.type === 'addGoogleAccount') {
+                // open the system account setup screen over the app; the web
+                // UI re-opens the picker itself once the user returns
+                AniBrowserNode.addGoogleAccount()
+                  .then((ok) => {
+                    webPostMessage(webRef.current, { type: 'addAccountReply', ok: true, seq: msg.seq });
+                  })
+                  .catch((e) => {
+                    webPostMessage(webRef.current, { type: 'addAccountReply', ok: false, error: String(e?.message ?? e), seq: msg.seq });
                   });
               }
             } catch {
@@ -380,13 +428,15 @@ function Shell() {
           </View>
         )}
         </View>
+        {/* keep fixed bottom UI (mini player, toasts) clear of the gesture nav bar */}
+        <View style={{ height: insets.bottom, backgroundColor: '#0b0e14' }} />
       </View>
     );
   }
 
   return (
-    <View style={[styles.root, { paddingTop: insets.top }]}>
-      <StatusBar barStyle="light-content" backgroundColor="#0b0e14" />
+    <View style={[styles.root, { paddingTop: insets.top, paddingBottom: insets.bottom }]}>
+      <StatusBar barStyle="light-content" />
       {phase === 'boot' ? (
         <>
           <Image source={require('./assets/splash-icon.png')} style={styles.bootLogo} />

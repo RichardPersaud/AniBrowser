@@ -21,17 +21,21 @@ The shared code (`desktop/server.js`, `desktop/scraper.js`, `desktop/cloud.js`,
 
 ## Why prebuilt native libs
 
-The JNI shim (`libanibrowser.so`) and nodejs-mobile's `libnode.so` ship
-**prebuilt**, extracted from a released APK by `scripts/fetch-libs.sh` — no
-NDK/CMake needed on the build machine (the shim's C++ source predates the
-Expo migration and lives only in release history). Re-run extraction only
-when the shim itself changes.
+`libnode.so` ships **prebuilt** from the gmaclennan/nodejs-mobile fork
+(Node v24.18.0, NDK r27d, **16 KB page-size compliant** — Google Play requires
+it since Nov 2025; the official nodejs-mobile release is still 4 KB-aligned).
+Refresh it with `scripts/fetch-node24.sh`.
+
+The JNI shim (`libanibrowser.so`) has its source in the repo
+(`modules/anibrowser-node/android/src/native/`, restored from release history)
+and is built with the NDK by `scripts/build-shim.sh` — run it whenever
+`native-lib.cpp` or `libnode.so` changes. Gradle itself needs no NDK/CMake.
 
 ## Dev loop (no APK reinstalls)
 
 ```
 bash scripts/sync-node.sh       # shared code -> assets/nodejs-project.zip
-bash scripts/fetch-libs.sh      # APK -> jniLibs (only when native libs change)
+bash scripts/build-shim.sh      # only when native-lib.cpp / libnode.so changed
 npx expo prebuild --platform android --no-install
 cd android && ./gradlew assembleDebug   # first build only / native changes
 adb install -r app/build/outputs/apk/debug/app-debug.apk

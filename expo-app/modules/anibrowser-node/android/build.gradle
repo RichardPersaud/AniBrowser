@@ -24,3 +24,11 @@ android {
     }
   }
 }
+
+// Native Google account picker (Credential Manager) — googleid is Google's
+// thin wrapper that turns the credential response into an ID token
+dependencies {
+  implementation("androidx.credentials:credentials:1.6.0")
+  implementation("androidx.credentials:credentials-play-services-auth:1.6.0")
+  implementation("com.google.android.libraries.identity.googleid:googleid:1.1.1")
+}
