@@ -985,7 +985,13 @@ h2 { font-size: 16px; margin: 18px 0 12px; color: var(--muted); font-weight: 600
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
-#detailControls { margin-top: 18px; display: flex; align-items: center; gap: 14px; }
+/* favorite pill pinned to the hero's top-right corner, right under the
+   topbar's profile icon (detail page only — when the meta block mounts into
+   the player slot it falls back to the header-row flex layout there).
+   Anchored to #detailGrid (relative via #detailHero>*) with a negative top —
+   that lands it level with the Back button row, mirrored across the header */
+#detailView #detailControls { position: absolute; top: -40px; right: 24px; margin: 0; }
+#detailControls { display: flex; align-items: center; gap: 14px; }
 .detail-metaline {
   margin-top: 8px;
   font-size: 13px;
@@ -2433,11 +2439,17 @@ button, select, .back-btn, .pill-btn {
     display: block;
     overflow: visible;
   }
-  #detailPoster { grid-column: 1; grid-row: 1 / span 2; }
+  /* poster spans every right-column row (title + info list + meta line) so a
+     short info block can't leave a stretched empty band next to it, and so it
+     bottoms out level with the meta line */
+  #detailPoster { grid-column: 1; grid-row: 1 / span 3; }
   #detailMetaRows { grid-column: 2; grid-row: 2; margin-top: 0; }
-  /* #detailMeta/#detailInfo{display:contents} unwrap these into the grid */
-  #detailMetaLine { grid-column: 1 / -1; margin-top: 0; white-space: normal; }
-  #detailControls { grid-column: 1 / -1; justify-content: flex-end; }
+  /* #detailMeta/#detailInfo{display:contents} unwrap these into the grid;
+     the heart (#detailControls) is absolute in the hero corner, out of the flow */
+  /* metaLine pinned to row 3 explicitly — auto placement would skip past the
+     poster's span area (sparse collision) and open a phantom 0-height track */
+  #detailMetaLine { grid-column: 1 / -1; grid-row: 3; margin-top: 0; white-space: normal; }
+  #detailView #detailControls { top: -40px; right: 4px; }
   #favBtn { width: 38px; height: 38px; padding: 0; }
   #detailInfo { display: contents; }
   #detailInfoBody {
