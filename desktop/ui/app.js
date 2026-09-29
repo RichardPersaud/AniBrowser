@@ -50,16 +50,21 @@ const PREFS_TS_KEY = 'anibrowser_prefs_ts';
 const GUEST_KEY = 'anibrowser_guest';
 const WN_KEY = 'anibrowser_last_whatsnew'; // version last welcomed — device-local
 
-// guest mode: local-only session flag. Deliberately a standalone key, NOT a
-// prefs entry — prefs are pushed whole-blob to the cloud and mirrored into the
+// guest mode: session-only flag. Deliberately a standalone key, NOT a prefs
+// entry — prefs are pushed whole-blob to the cloud and mirrored into the
 // durable backup file, so a guest flag there would leak across devices and
-// self-resurrect from the backup after being cleared.
+// self-resurrect from the backup after being cleared. sessionStorage (not
+// localStorage) on purpose: it clears when the app is relaunched, so the
+// welcome / sign-in page always comes back on the next launch.
+try { localStorage.removeItem(GUEST_KEY); } catch { /* private mode etc. */ }
 function isGuest() {
-  return localStorage.getItem(GUEST_KEY) === '1';
+  try { return sessionStorage.getItem(GUEST_KEY) === '1'; } catch { return false; }
 }
 function setGuest(on) {
-  if (on) localStorage.setItem(GUEST_KEY, '1');
-  else localStorage.removeItem(GUEST_KEY);
+  try {
+    if (on) sessionStorage.setItem(GUEST_KEY, '1');
+    else sessionStorage.removeItem(GUEST_KEY);
+  } catch { /* storage unavailable — gate logic degrades to "always ask" */ }
 }
 
 // tombstones: { favorites: {slug: ts}, progress: {slug: ts} } — deletes need
