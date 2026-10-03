@@ -8,7 +8,13 @@ const fs = require('fs');
 const fsp = fs.promises;
 const os = require('os');
 const path = require('path');
+const crypto = require('crypto');
 const { pipeline } = require('stream');
+// Mobile devices and the emulator often route to a dead address when the
+// source host returns several A/AAAA records — the connect stage then hangs
+// out on one family before AggregateError/ETIMEDOUT. IPv4 always works here,
+// so try it first (available since Node 17).
+try { require('dns').setDefaultResultOrder('ipv4first'); } catch { /* older node */ }
 const scraper = require('./scraper');
 // lazy: updater.js imports electron, so a plain `node server` (tests/probes)
 // must not load it until an /api/update call actually needs it
@@ -31,6 +37,9 @@ let dataDir = null; // Documents/AniBrowser — set by start(); null in plain-no
 const BACKUP_FILE = 'anibrowser-data.json';
 const RECENT_TTL = 5 * 60 * 1000;
 let recent = null; // { t, results }
+// home tabs (Popular / Top Rated) — slower-moving lists than the update feed
+const HOMELIST_TTL = 30 * 60 * 1000;
+const homeLists = new Map(); // tab -> { t, results }
 const UPCOMING_TTL = 30 * 60 * 1000;
 let upcoming = null; // { t, page, results }
 const SPOTLIGHT_TTL = 30 * 60 * 1000;
@@ -158,16 +167,37 @@ async function writeBackup(data) {
   await fsp.rename(tmp, file);
 }
 
+// compare one JSON-able collection between two backup snapshots
+function collectionChanged(prev, next, key) {
+  return JSON.stringify(prev?.[key] ?? null) !== JSON.stringify(next?.[key] ?? null);
+}
+
 function queueBackupWrite(data) {
   writeQueue = writeQueue
     .then(async () => {
       await backupReady; // dir resolution (bounded by its own timeout)
+      const prev = await readBackup();
       await writeBackup(data);
       console.log(`[backup] saved ${backupPath()}`);
-      // cloud sync mirrors the file — fire-and-forget, debounced inside cloud.js
-      try { cloudMod().onLocalDataChanged(); } catch { /* never block the write */ }
+      // cloud sync mirrors the file — fire-and-forget, debounced inside
+      // cloud.js. Only the collections that actually changed are named, so
+      // the sync engine can push slim columns instead of the whole row.
+      const changed = ['prefs', 'favorites', 'progress']
+        .filter((k) => collectionChanged(prev, data, k));
+      try { cloudMod().onLocalDataChanged(changed); } catch { /* never block the write */ }
     })
     .catch((e) => console.error('[backup] write failed:', e.message));
+}
+
+// batched episode counts (the favorites new-episode checker); a slug that
+// can't be scraped is left out so callers treat it as unknown
+async function epCounts(slugs) {
+  const out = {};
+  await Promise.all(slugs.map(async (s) => {
+    try { out[s] = (await scraper.episodes(s)).length; }
+    catch { /* leave the slug out on failure */ }
+  }));
+  return out;
 }
 
 function readJsonBody(req) {
@@ -374,6 +404,149 @@ function readBody(stream) {
   });
 }
 
+/* ---- offline caches -------------------------------------------------------
+   Poster/cover art is hot-linked CDN URLs and the Android WebView runs with
+   cacheEnabled={false}, so Chromium retains none of it. Every poster img goes
+   through /img below: bytes already mirrored on disk are served straight from
+   it (works with the network down), otherwise the CDN is fetched once,
+   streamed to the client and written into <dataDir>/img. /api/detail and
+   /api/episodes payloads get the same treatment under <dataDir>/cache — a
+   stale copy is served when the source is unreachable, so a show opened once
+   online stays browsable (synopsis, meta, episode grid) offline. */
+const IMG_MAX_FILES = 800; // posters run 30-150 KB → well under a couple hundred MB
+const IMG_MAX_BYTES = 3 * 1024 * 1024; // per-file cap: a poster is never bigger
+const imgLocks = new Map(); // url -> in-flight download promise (dedups grid bursts)
+const IMG_TYPES = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/gif': 'gif' };
+let imgNetDown = 0; // while set (ms epoch), upstream is assumed dead — fail fast
+let imgWrites = Promise.resolve();
+let imgWritesSinceEvict = 0;
+const DETAIL_MAX = 500; // cached detail payloads (2-4 KB each)
+const EP_MAX = 600; // cached episode lists
+let cacheWrites = Promise.resolve();
+
+function imgDir() { return backupDir ? path.join(backupDir, 'img') : null; }
+function imgCachePath(url) {
+  const dir = imgDir();
+  if (!dir) return null; // no dataDir (plain-node tests) → stream only, never persist
+  const ext = (/\.([a-z0-9]{3,4})(?:[?#]|$)/i.exec(url) || [])[1];
+  const known = ext && MIME['.' + String(ext).toLowerCase()];
+  const name = crypto.createHash('sha1').update(url).digest('hex');
+  return path.join(dir, name + (known ? '.' + String(ext).toLowerCase() : '.img'));
+}
+
+// shared by the img cache and the detail/episode JSON caches: drop oldest
+// entries (by mtime) past the max count; missing/statless files go first
+async function evictDir(dir, max) {
+  const names = await fsp.readdir(dir).catch(() => []);
+  if (names.length <= max) return;
+  const list = (await Promise.all(names.map(async (n) => {
+    if (n.endsWith('.tmp')) return null;
+    const st = await fsp.stat(path.join(dir, n)).catch(() => null);
+    return st ? { n, t: st.mtimeMs } : null;
+  }))).filter(Boolean).sort((a, b) => a.t - b.t);
+  for (let i = 0; i < list.length - max; i++) {
+    await fsp.unlink(path.join(dir, list[i].n)).catch(() => {});
+  }
+}
+
+function queueImgWrite(file, buf) {
+  if (!file) return; // no dataDir → stream only, never persist
+  imgWrites = imgWrites.then(async () => {
+    await backupReady; // dir resolution, bounded by its own timeout
+    if (!backupDir) return;
+    await fsp.mkdir(path.dirname(file), { recursive: true });
+    const tmp = file + '.' + process.pid + '.tmp';
+    await fsp.writeFile(tmp, buf);
+    await fsp.rename(tmp, file); // write-then-rename, like writeBackup
+    if (++imgWritesSinceEvict >= 25) { // readdir every 25th write is plenty
+      imgWritesSinceEvict = 0;
+      await evictDir(imgDir(), IMG_MAX_FILES);
+    }
+  }).catch((e) => console.warn('[img] cache write failed:', e.message));
+}
+
+function cachePath(kind, key) {
+  return backupDir ? path.join(backupDir, 'cache', kind, String(key) + '.json') : null;
+}
+function queueCacheWrite(kind, key, obj) {
+  const file = cachePath(kind, key);
+  if (!file) return;
+  cacheWrites = cacheWrites.then(async () => {
+    await backupReady;
+    if (!backupDir) return;
+    await fsp.mkdir(path.dirname(file), { recursive: true });
+    const tmp = file + '.tmp';
+    await fsp.writeFile(tmp, JSON.stringify(obj));
+    await fsp.rename(tmp, file);
+    await evictDir(path.dirname(file), kind === 'details' ? DETAIL_MAX : EP_MAX);
+  }).catch((e) => console.warn('[cache] write failed:', e.message));
+}
+async function readCacheJSON(kind, key) {
+  const file = cachePath(kind, key);
+  if (!file) return null;
+  try { return JSON.parse(await fsp.readFile(file, 'utf8')); } catch { return null; }
+}
+
+function sendImg(res, buf, type) {
+  res.writeHead(200, {
+    'Content-Type': type,
+    'Content-Length': buf.length,
+    'Cache-Control': 'public, max-age=86400',
+  });
+  res.end(buf);
+}
+
+async function handleImg(req, res, q) {
+  const target = b64dec(q.get('u') || '');
+  if (!/^https:\/\//.test(target)) {
+    res.writeHead(400, { 'Content-Type': 'text/plain' });
+    return res.end('Bad target');
+  }
+  const file = imgCachePath(target);
+  if (file) {
+    const buf = await fsp.readFile(file).catch(() => null);
+    if (buf) return sendImg(res, buf, MIME[path.extname(file).toLowerCase()] || 'image/jpeg');
+  }
+  let job = imgLocks.get(target); // up to a full grid may share one download
+  if (!job && Date.now() < imgNetDown) {
+    // upstream just failed for another poster (offline, DNS dead): 404 now
+    // instead of burning through the retry ladder per tile
+    res.writeHead(404, { 'Content-Type': 'text/plain' });
+    return res.end('not cached yet');
+  }
+  if (!job) {
+    job = (async () => {
+      const ctrl = new AbortController();
+      const up = await openWithRetry(target, { 'User-Agent': scraper.UA, Referer: scraper.BASE + '/' }, ctrl);
+      if (up.status !== 200) { if (up.res) up.res.resume(); return null; }
+      const chunks = [];
+      let size = 0;
+      try {
+        for await (const c of up.res) {
+          size += c.length;
+          if (size > IMG_MAX_BYTES) return null; // not a poster
+          chunks.push(c);
+        }
+      } catch { return null; }
+      const type = String(up.headers['content-type'] || '').toLowerCase().split(';')[0];
+      if (!IMG_TYPES[type] || size === 0) return null;
+      return { buf: Buffer.concat(chunks), type: IMG_TYPES[type] };
+    })().finally(() => imgLocks.delete(target));
+    imgLocks.set(target, job);
+  }
+  let got = null;
+  try { got = await job; } catch (e) { console.warn('[img] fetch failed:', e.message); }
+  if (got && got.buf) {
+    imgNetDown = 0; // upstream is alive again
+    queueImgWrite(file, got.buf); // fire-and-forget: never delays the response
+    return sendImg(res, got.buf, got.type);
+  }
+  imgNetDown = Date.now() + 5000; // every miss this second assumes offline too
+  // offline miss: DNS fails fast → 404 quickly → the UI's placeholder takes over
+  res.writeHead(404, { 'Content-Type': 'text/plain' });
+  res.end('not cached yet');
+}
+
 // Raw PostgREST row (with embedded votes) → the shape the UI consumes.
 function decorateFeedback(row) {
   const uid = cloudMod().userId();
@@ -407,6 +580,19 @@ async function route(req, res) {
       recent = { t: now, results: await scraper.recentlyUpdated(1) };
     }
     return sendJson(res, 200, { results: recent.results });
+  }
+
+  if (p === '/api/homelist') {
+    // home tab lists: Popular (site's most-popular page) and Top Rated
+    // (filter sorted by score); 30-min cache like the other slow lists
+    const tab = q.get('tab') === 'toprated' ? 'toprated' : 'popular';
+    const now = Date.now();
+    let entry = homeLists.get(tab);
+    if (!entry || now - entry.t > HOMELIST_TTL) {
+      entry = { t: now, results: tab === 'toprated' ? await scraper.topRated(1) : await scraper.mostPopular(1) };
+      homeLists.set(tab, entry);
+    }
+    return sendJson(res, 200, { results: entry.results });
   }
 
   if (p === '/api/upcoming') {
@@ -491,7 +677,24 @@ async function route(req, res) {
     const slug = q.get('slug') || '';
     if (!/^[a-z0-9-]+$/i.test(slug)) return sendJson(res, 400, { error: 'Bad slug' });
     try {
-      return sendJson(res, 200, await scraper.details(slug));
+      const d = await scraper.details(slug);
+      queueCacheWrite('details', slug, { ...d, savedAt: new Date().toISOString() });
+      return sendJson(res, 200, d);
+    } catch (e) {
+      // source unreachable: a show opened once online stays browsable offline
+      const saved = await readCacheJSON('details', slug);
+      if (saved) return sendJson(res, 200, { ...saved, cached: true });
+      return sendJson(res, 502, { error: String(e.message || e) });
+    }
+  }
+
+  // //CAST tab: characters + their Japanese voice actors (resolved on AniList,
+  // scraper.side — the source site has no cast of its own)
+  if (p === '/api/cast') {
+    const slug = q.get('slug') || '';
+    if (!/^[a-z0-9-]+$/i.test(slug)) return sendJson(res, 400, { error: 'Bad slug' });
+    try {
+      return sendJson(res, 200, await scraper.cast(slug));
     } catch (e) {
       return sendJson(res, 502, { error: String(e.message || e) });
     }
@@ -564,16 +767,41 @@ async function route(req, res) {
 
   if (p === '/api/episodes') {
     const slug = q.get('slug') || '';
-    const eps = await scraper.episodes(slug);
-    // which audio tracks the show really has (from the first episode's server
-    // list) — null when unknown, and the UI falls back to the detail counts
-    const audio = await scraper.audioTracks(slug);
-    // flag episodes known to be unresolvable (all embeds dead) so the UI can
-    // mark them in the list instead of a certain failure on click
+    let eps;
+    let audio;
+    try {
+      eps = await scraper.episodes(slug);
+      // which audio tracks the show really has (from the first episode's server
+      // list) — null when unknown, and the UI falls back to the detail counts
+      audio = await scraper.audioTracks(slug);
+      // flag episodes known to be unresolvable (all embeds dead) so the UI can
+      // mark them in the list instead of a certain failure on click
+      for (const ep of eps) {
+        if (scraper.isDeadEp(ep.epId)) ep.dead = true;
+      }
+      queueCacheWrite('eps', slug, { episodes: eps, audio, savedAt: new Date().toISOString() });
+    } catch (e) {
+      // offline: serve the saved copy (dead flags recomputed from the live map
+      // below so a stale file can't resurrect a stale dead mark)
+      const saved = await readCacheJSON('eps', slug);
+      if (!saved) throw e;
+      eps = saved.episodes || [];
+      audio = saved.audio ?? null;
+    }
     for (const ep of eps) {
       if (scraper.isDeadEp(ep.epId)) ep.dead = true;
     }
     return sendJson(res, 200, { episodes: eps, audio });
+  }
+
+  if (p === '/api/auds') {
+    // per-episode audio truth (small shows only — the probe is 1 request/ep)
+    const slug = q.get('slug') || '';
+    try {
+      return sendJson(res, 200, { auds: await scraper.epAuds(slug) });
+    } catch (e) {
+      return sendJson(res, 200, { auds: null, error: String(e.message || e) });
+    }
   }
 
   if (p === '/api/epcounts' && req.method === 'POST') {
@@ -583,12 +811,50 @@ async function route(req, res) {
     let slugs = [];
     try { slugs = JSON.parse(body).slugs || []; } catch { /* treated as empty */ }
     slugs = slugs.filter((s) => /^[a-z0-9-]+$/i.test(String(s))).slice(0, 100);
-    const out = {};
-    await Promise.all(slugs.map(async (s) => {
-      try { out[s] = (await scraper.episodes(s)).length; }
-      catch { /* leave the slug out on failure */ }
-    }));
-    return sendJson(res, 200, { counts: out });
+    return sendJson(res, 200, { counts: await epCounts(slugs) });
+  }
+
+  // background favorites check — this is how new-episode alerts work while the
+  // app is closed: the Android WorkManager job boots this server for a few
+  // seconds, reads the durable backup, diffs episode counts against the seen
+  // baselines and gets a list of truly fresh updates (the web UI's own checker
+  // stays the path for while-the-app-is-open; same semantics on both sides).
+  if (p === '/api/favcheck' && req.method === 'GET') {
+    await backupReady; // dir resolution (bounded by its own timeout)
+    const data = await readBackup();
+    if (!data) return sendJson(res, 200, { fresh: [] });
+    const favs = (data.favorites && typeof data.favorites === 'object') ? data.favorites : {};
+    const bp = (data.prefs && typeof data.prefs === 'object') ? data.prefs : {};
+    if (bp.pushNotifs === false) return sendJson(res, 200, { fresh: [] }); // user turned alerts off
+    const slugs = Object.keys(favs)
+      .filter((s) => /^[a-z0-9-]+$/i.test(s))
+      .slice(0, 100);
+    if (!slugs.length) return sendJson(res, 200, { fresh: [] });
+    const counts = await epCounts(slugs);
+    const seen = (bp.favEpSeen && typeof bp.favEpSeen === 'object') ? { ...bp.favEpSeen } : {};
+    const active = (Array.isArray(bp.notifActive) ? bp.notifActive : [])
+      .filter((n) => n && favs[n.slug]); // drop un-favorited shows
+    const fresh = [];
+    for (const slug of slugs) {
+      const count = counts[slug];
+      if (typeof count !== 'number') continue;
+      const last = seen[slug];
+      if (typeof last !== 'number') { seen[slug] = count; continue; } // first sighting = baseline
+      if (count > last) {
+        const idx = active.findIndex((n) => n.slug === slug);
+        const carried = idx >= 0 ? active[idx].newCount : 0;
+        const entry = {
+          slug, title: favs[slug].title || slug, newCount: count - last + carried, count,
+        };
+        if (idx >= 0) active[idx] = entry; else { active.push(entry); fresh.push(entry); }
+        seen[slug] = count;
+      }
+    }
+    // persist the new baselines so the app's own checker doesn't re-announce
+    // the same episode on the next open; prefsTs jumps so a later boot adopts
+    // this state rather than overwriting it with localStorage's stale copy
+    queueBackupWrite({ ...data, prefs: { ...bp, favEpSeen: seen, notifActive: active }, prefsTs: Date.now() });
+    return sendJson(res, 200, { fresh });
   }
 
   if (p === '/api/sources') {
@@ -625,6 +891,12 @@ async function route(req, res) {
 
   if (p === '/stream') {
     return handleStream(req, res, q);
+  }
+
+  // poster/cover art: serves the on-disk mirror when we have one (offline
+  // works), otherwise fetches the CDN once and persists it
+  if (p === '/img') {
+    return handleImg(req, res, q);
   }
 
   // ---- cloud sync (Google via Supabase) ----
@@ -681,6 +953,9 @@ async function route(req, res) {
     else if (prof.hideEmail) authorName = 'Anonymous';
     const row = await cloudMod().addFeedback({ title, body, authorName });
     if (!row) return sendJson(res, 500, { error: 'feedback was not saved' });
+    // fire-and-forget — mail must never delay or fail the post (mailer.js
+    // logs its own failures)
+    require('./mailer').feedbackNotice({ id: row.id, title, body, author: authorName });
     return sendJson(res, 200, { item: decorateFeedback(row) });
   }
   if (p === '/api/feedback/vote' && req.method === 'POST') {

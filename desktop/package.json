@@ -26,6 +26,7 @@
       "server.js",
       "cloud.js",
       "scraper.js",
+      "mailer.js",
       "updater.js",
       "ui/**/*",
       "package.json"
