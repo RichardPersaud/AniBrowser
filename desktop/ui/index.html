@@ -20,6 +20,10 @@
     <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
     <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></symbol>
     <symbol id="i-play" viewBox="0 0 24 24"><polygon points="6 3 20 12 6 21 6 3"/></symbol>
+    <!-- custom player controls (pv): pause is a filled pair of bars; cc is the
+         round-rect subtitle glyph — both filled/stroked via the .icon class -->
+    <symbol id="i-pause" viewBox="0 0 24 24"><rect x="6" y="4" width="4" height="16" rx="1.2"/><rect x="14" y="4" width="4" height="16" rx="1.2"/></symbol>
+    <symbol id="i-cc" viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="14" rx="3"/><path d="M10.5 10.2a2.4 2.4 0 1 0 0 3.6"/><path d="M17.5 10.2a2.4 2.4 0 1 0 0 3.6"/></symbol>
     <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></symbol>
     <symbol id="i-chev-left" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></symbol>
     <symbol id="i-chev-right" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
@@ -95,6 +99,8 @@
           <p id="notifEmpty" class="hint">No notifications yet — new episodes of your favorites will show up here.</p>
         </div>
       </div>
+      <!-- shown during a network loss so the user knows why fresh lists are empty -->
+      <span id="offlinePill" class="offline-pill" hidden>Offline</span>
       <!-- the signed-in user's photo — tapping it opens the profile page -->
       <button id="accountBtn" title="Profile">
         <img id="accountAvatar" alt="" hidden>
@@ -131,8 +137,15 @@
           <div id="heroSlides"></div>
           <div id="heroDots"></div>
         </div>
+        <div id="heroSkeleton" class="sk-hero sk" hidden>
+          <div class="sk-hero-lines">
+            <div class="sk-line sk"></div>
+            <div class="sk-line sk"></div>
+          </div>
+        </div>
         <!-- upcoming strip: auto-scrolls, tap to open, shows the premiere date -->
         <div id="upMarquee" hidden><div id="upTrack"></div></div>
+        <div id="upSkeleton" hidden></div>
         <div id="continueSection" hidden>
           <div class="section-head">
             <h2>Continue watching</h2>
@@ -141,14 +154,24 @@
           <div id="continueGrid" class="slider"></div>
         </div>
         <div id="recentSection" hidden>
-          <h2>Recently updated</h2>
+          <!-- home tabs: Recently updated / Popular / Top Rated share one grid -->
+          <div class="section-head">
+            <div id="homeTabs" class="segmented">
+              <button data-tab="recent" class="active">Recently updated</button>
+              <button data-tab="popular">Popular</button>
+              <button data-tab="toprated">Top Rated</button>
+            </div>
+          </div>
           <div id="recentLoading"><div class="spinner small"></div></div>
           <div id="recentGrid" class="grid"></div>
         </div>
         <div id="resultsSection" hidden>
           <h2 id="resultsTitle">Results</h2>
           <div id="resultsGrid" class="grid"></div>
-          <div id="moreRow"><button id="moreBtn" hidden>Load more</button></div>
+          <div id="moreRow" class="inf-footer" hidden>
+          <div class="inf-spinner"><div class="spinner small"></div></div>
+          <span class="inf-end"></span>
+        </div>
         </div>
         <div id="upcomingSection" hidden>
           <div class="section-head">
@@ -199,11 +222,9 @@
         <div id="browseLoading" hidden><div class="spinner"></div></div>
         <button id="bfToggle" class="pill-btn" title="Show / hide filters"><svg class="icon"><use href="#i-filter"></use></svg> Filters</button>
         <div id="browseGrid" class="grid"></div>
-        <div id="browsePager">
-          <button id="browsePrev" class="pill-btn"><svg class="icon"><use href="#i-chev-left"></use></svg> Prev</button>
-          <div id="browsePages"></div>
-          <span id="browsePageLabel"></span>
-          <button id="browseNext" class="pill-btn">Next <svg class="icon"><use href="#i-chev-right"></use></svg></button>
+        <div id="browseLoad" class="inf-footer">
+          <div class="inf-spinner"><div class="spinner small"></div></div>
+          <span class="inf-end"></span>
         </div>
       </section>
 
@@ -267,7 +288,6 @@
               <button id="editProfileCancel" class="pill-btn" type="button">Cancel</button>
             </div>
           </div>
-          <p class="hint">Favorites, history and settings live on this device and mirror to your account whenever you're online — the app works fully offline either way.</p>
         </div>
         <!-- favorites + watching live on the profile page (the sidebar has no favorites tab) -->
         <div id="profileLists">
@@ -307,19 +327,27 @@
               <option value="360">360p</option>
             </select>
           </label>
+          <label class="setting-row">Default server
+            <select id="defServerSel" title="Stream server new episodes open with">
+              <option value="Vidstream-2">Vidstream-2</option>
+              <option value="HD-1">HD-1</option>
+              <option value="VidPlay-1">VidPlay-1</option>
+              <option value="ZokoAnime">ZokoAnime</option>
+              <option value="">Auto (first available)</option>
+            </select>
+          </label>
           <label class="setting-row">Default audio track
             <div id="defTypeToggle" class="segmented">
               <button data-value="sub" class="active">SUB (original + subs)</button>
               <button data-value="dub">DUB</button>
             </div>
           </label>
-          <label class="setting-row">R-rated content (18+)
-            <div id="r18Toggle" class="segmented">
-              <button data-value="hide" class="active">Hide</button>
-              <button data-value="show">Show</button>
+          <label class="setting-row">Theme
+            <div id="themeToggle" class="segmented">
+              <button data-value="dark" class="active">Dark</button>
+              <button data-value="light">Light</button>
             </div>
           </label>
-          <p class="hint">Applied to new episodes you play. "Hide" removes titles rated 18+, R, R+ or Rx from Home, Search and Browse (rated titles are looked up from the source's detail pages, so they fade out shortly after a page loads).</p>
           <label class="setting-row">Favorite update alerts
             <div id="pushNotifToggle" class="segmented">
               <button data-value="on" class="active">On</button>
@@ -349,6 +377,9 @@
               <button id="checkUpdateBtn" class="pill-btn"><svg class="icon"><use href="#i-refresh"></use></svg> Check now</button>
             </div>
           </label>
+          <!-- Play-distributed builds: the APK updater above is gone with the
+               row — updates there arrive via the launch-time Play flexible
+               in-app flow, no manual check is offered -->
           <hr class="setting-sep">
           <label class="setting-row">Legal
             <div class="update-row">
@@ -408,6 +439,7 @@
                 <div id="detailSkeleton" hidden></div>
                 <p id="detailSynopsis"></p>
                 <button id="synopsisToggle" class="pill-btn" hidden>View more</button>
+                <p id="detailNoData" class="hint" hidden>Couldn't reach the source. Open this show once online and its synopsis and details are saved for offline browsing.</p>
                 <div id="detailChips"></div>
                 <div id="detailGenres" class="chip-row"></div>
               </div>
@@ -421,6 +453,7 @@
         <button class="detail-tab active" data-tab="episodes">EPISODE</button>
         <button class="detail-tab" data-tab="seasons">SEASONS</button>
         <button class="detail-tab" data-tab="related">RELATED</button>
+        <button class="detail-tab" data-tab="cast">CAST</button>
         <!-- player-screen only: the info card moves into #panelDetails there
              (CSS shows this tab under #playerView.in-player, hides it on the
              detail page where the info stays inline) -->
@@ -460,6 +493,14 @@
         </div>
       </div>
 
+      <!-- //CAST: character grid filled lazily by loadCast() on first open
+           (server resolves the show on AniList — /api/cast) -->
+      <div id="panelCast" class="detail-panel" hidden>
+        <div id="castLoad" hidden><div class="spinner"></div></div>
+        <div id="castGrid" class="cast-grid"></div>
+        <p id="castEmpty" class="hint" hidden>No cast information found</p>
+      </div>
+
       <!-- player screen only: #detailInfo is moved in here by
            ensureDetailMounted() and back into #detailMeta by
            restorePlayerDetail() -->
@@ -472,17 +513,48 @@
       <button class="back-btn" data-back="back">← Back</button>
       <h2 id="collectionTitle"></h2>
       <div id="collectionGrid" class="grid"></div>
-      <div id="collectionPager" hidden>
-        <button id="colPrev" class="pill-btn"><svg class="icon"><use href="#i-chev-left"></use></svg> Prev</button>
-        <span id="colPageLabel"></span>
-        <button id="colNext" class="pill-btn">Next <svg class="icon"><use href="#i-chev-right"></use></svg></button>
+      <div id="collectionLoad" class="inf-footer" hidden>
+        <div class="inf-spinner"><div class="spinner small"></div></div>
+        <span class="inf-end"></span>
       </div>
     </section>
 
     <!-- PLAYER -->
     <section id="playerView" hidden>
       <div id="playerWrap">
-        <div id="videoArea"><video id="video" controls playsinline></video></div>
+        <div id="videoArea">
+          <!-- no "controls" attribute: the pv overlay (player-controls.js) draws
+               every control itself. The attribute is RE-ADDED while the video is
+               docked in the mini player (which has no pv UI). -->
+          <video id="video" playsinline></video>
+          <!-- custom player overlay (pv). #pvTop only exists for rotated
+               fullscreen (the portrait page shows the title/EP/back in
+               #playerTop above the band); #pvBottom is the control bar. The
+               daily-budget badge is re-parented into #pvBadgeSlot while
+               rotated. Everything is hidden in PiP (body.pip-full). -->
+          <div id="pvUi" hidden>
+            <div id="pvTop">
+              <button id="pvBack" class="pv-btn" data-back="detail" title="Back to episodes"><svg class="icon"><use href="#i-chev-left"></use></svg></button>
+              <div id="pvTitleBox"><div id="pvTitle"></div><div id="pvEp"></div></div>
+              <div id="pvBadgeSlot"></div>
+              <!-- SUB-DUB / server / quality / auto-next pills: #playerRight is
+                   re-parented in here by player-controls.js (it used to sit under
+                   the video band / in the (hidden-when-rotated) detail slot) -->
+              <div id="pvChips" hidden></div>
+              <button id="pvGear" class="pv-btn" title="Playback settings"><svg class="icon"><use href="#i-gear"></use></svg></button>
+            </div>
+            <div id="pvBottom">
+              <button id="pvPlay" class="pv-btn" title="Play / pause"><svg class="icon"><use id="pvPlayIcon" href="#i-play"></use></svg></button>
+              <span id="pvTime">0:00</span>
+              <div id="pvSeek" title="Seek"><div id="pvBuf"></div><div id="pvFill"></div><div id="pvHead"></div></div>
+              <span id="pvDur">0:00</span>
+              <button id="pvSpeed" class="pv-btn" title="Playback speed">1×</button>
+              <button id="pvFull" class="pv-btn" title="Fullscreen"><svg class="icon"><use href="#i-maximize"></use></svg></button>
+            </div>
+            <div id="pvSheet" hidden></div>
+            <div id="pvHint" hidden></div>
+          </div>
+        </div>
         <button id="skipIntroBtn" class="overlay-btn" hidden>Skip Intro →</button>
         <div id="playerLoading" class="player-loading"><div class="spinner"></div><div id="playerStatus"></div><button id="playerCancelBtn" class="back-btn">← Back to episodes</button></div>
         <div id="playerTop">
@@ -559,6 +631,7 @@
        WebView renders as a bare system popup); confirmDialog() resolves it -->
   <div id="confirmDlg" hidden>
     <div class="dlg-card" role="alertdialog" aria-modal="true" aria-labelledby="dlgTitle">
+      <div id="dlgIcon" class="dlg-icon"><svg class="icon"><use id="dlgIconUse" href="#i-info"></use></svg></div>
       <h3 id="dlgTitle"></h3>
       <p id="dlgMsg"></p>
       <div class="dlg-actions">
@@ -602,5 +675,7 @@
   </div>
   <script src="hls.min.js"></script>
   <script src="app.js"></script>
+  <!-- after app.js: it reads app.js's global scope (state, prefs, fmtTime…) -->
+  <script src="player-controls.js"></script>
 </body>
 </html>

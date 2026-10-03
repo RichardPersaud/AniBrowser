@@ -9,6 +9,89 @@ const UA =
   '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 const XOR_KEY = 'otaku-embed-v1';
 
+const httpMod = require('http');
+const httpsMod = require('https');
+const zlib = require('zlib');
+// Site fetches avoid undici's pooled fetch: on mobile/emulator its connect
+// stage sometimes ETIMEDOUTs trying every address of the host while a plain
+// IPv4 socket works. family: 4 pins it; keep-alive off keeps the flaky CDN
+// reuse behavior identical to the streaming proxy.
+const siteAgents = {
+  'http:': new httpMod.Agent({ keepAlive: false, family: 4 }),
+  'https:': new httpsMod.Agent({ keepAlive: false, family: 4 }),
+};
+
+// fetch-shaped shim over a raw https/http response: resolves redirects (up to
+// 5) and attaches text()/json()/ok the way the fetch Response does, so every
+// caller keeps working unchanged. Sends the headers a browser would (the node
+// fetch ones kept Cloudflare happy; without them the connection gets dropped)
+// and decodes gzip/deflate/br bodies.
+function rawGet(url, extraHeaders, depth = 0) {
+  return new Promise((resolve, reject) => {
+    if (depth > 5) return reject(new Error(`Too many redirects for ${url}`));
+    let u;
+    try {
+      u = new URL(url);
+    } catch {
+      return reject(new Error(`Bad URL: ${url}`));
+    }
+    const headers = {
+      'User-Agent': UA,
+      Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Accept-Encoding': 'gzip, deflate, br',
+      ...extraHeaders,
+    };
+    const mod = u.protocol === 'http:' ? httpMod : httpsMod;
+    const req = mod.request(u, {
+      agent: siteAgents[u.protocol],
+      method: 'GET',
+      headers,
+    });
+    req.setTimeout(20000, () => req.destroy(new Error(`upstream timeout for ${url}`)));
+    // http.request() (unlike http.get()) never flushes until end() is called
+    req.end();
+    req.on('response', (r) => {
+      if ([301, 302, 303, 307, 308].includes(r.statusCode) && r.headers.location) {
+        r.resume(); // discard the redirect body
+        resolve(rawGet(new URL(r.headers.location, u).href, extraHeaders, depth + 1));
+        return;
+      }
+      r.ok = r.statusCode < 400;
+      const enc = String(r.headers['content-encoding'] || '').toLowerCase();
+      const decode = enc.includes('br') ? zlib.brotliDecompressSync
+        : enc.includes('deflate') ? zlib.inflateSync
+        : enc.includes('gzip') ? zlib.gunzipSync
+        : null;
+      const text = () =>
+        new Promise((res2, rej2) => {
+          const chunks = [];
+          r.on('data', (c) => chunks.push(c));
+          r.on('end', () => {
+            const raw = Buffer.concat(chunks);
+            if (decode && raw.length) {
+              try {
+                res2(decode(raw).toString('utf8'));
+                return;
+              } catch (e) {
+                rej2(new Error(`Body decode failed (${enc}) for ${u.href}: ${e.message}`));
+                return;
+              }
+            }
+            res2(raw.toString('utf8'));
+          });
+          r.on('error', rej2);
+        });
+      r.text = text;
+      r.json = async () => JSON.parse(await text());
+      // body stays paused until text()/json() consume it — an unread body
+      // just means its fresh socket (keepAlive off) closes when done
+      resolve(r);
+    });
+    req.on('error', reject);
+  });
+}
+
 const epListCache = new Map(); // numId -> { t, eps }
 const CACHE_TTL = 5 * 60 * 1000;
 
@@ -35,13 +118,29 @@ function isDeadEp(epId) {
 async function get(url, opts = {}) {
   const headers = { 'User-Agent': UA };
   if (opts.referer) headers.Referer = opts.referer;
-  const res = await fetch(url, {
-    headers,
-    redirect: 'follow',
-    signal: AbortSignal.timeout(opts.timeout || 20000),
-  });
-  if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
-  return res;
+  // the site flakes at connect time (same URL dead once, fine on a retry —
+  // mirrors the stream CDNs the proxy retries). One quick retry helps page
+  // loads survive it; a retry after a genuine slow timeout would only double
+  // the wait, so fast failures only.
+  for (let i = 0; i < 2; i++) {
+    const started = Date.now();
+    try {
+      const res = await rawGet(url, headers);
+      if (!res.ok) {
+        res.resume(); // drain the error body so the socket frees up
+        throw new Error(`HTTP ${res.statusCode} for ${url}`);
+      }
+      return res;
+    } catch (e) {
+      // retry only the first attempt, and only on a quick network stumble —
+      // the shim rejects with real Errors (timeout/connect), not a TypeError
+      if (i === 0 && Date.now() - started < 8000 && !/HTTP \d+/.test(e.message || '')) {
+        await new Promise((r) => setTimeout(r, 700));
+        continue;
+      }
+      throw e;
+    }
+  }
 }
 
 function unescapeBackslashes(s) {
@@ -110,6 +209,18 @@ async function search(query, page = 1) {
 
 async function recentlyUpdated(page = 1) {
   const url = `${BASE}/recently-updated?page=${page}`;
+  return parseFilmList(await (await get(url)).text());
+}
+
+// home tabs: Popular = the site's most-popular list; Top Rated = filter
+// sorted by avg_score, pinned to score>=8 TV shows (unpinned, the bare
+// score sort leads with niche 10/10-from-2-votes noise that reads wrong)
+async function mostPopular(page = 1) {
+  const url = `${BASE}/most-popular?page=${page}`;
+  return parseFilmList(await (await get(url)).text());
+}
+async function topRated(page = 1) {
+  const url = `${BASE}/filter?sort=avg_score&score=8&type=tv&page=${page}`;
   return parseFilmList(await (await get(url)).text());
 }
 
@@ -358,6 +469,40 @@ async function ratings(slugs) {
 }
 
 // ---- episode list ----------------------------------------------------------
+
+// Per-episode audio truth: the source's watch page only tags one big SUB/DUB
+// count pair, which goes stale (Thunder 3 tagged DUB 12 while ep 10 serves sub
+// only). The episode's own server list is the real answer — one probe per
+// episode, so only reasonable-sized shows get it. Entries the probe couldn't
+// answer stay undefined; the UI only hides tiles it positively knows lack.
+const audsCache = new Map(); // numId -> { t, auds }
+const AUDS_MAX_EPS = 60;
+const AUDS_CHUNK = 8;
+
+async function epAuds(slug) {
+  const numId = numIdFromSlug(slug);
+  const cached = audsCache.get(numId);
+  if (cached && Date.now() - cached.t < CACHE_TTL) return cached.auds;
+  let eps;
+  try { eps = await episodes(slug); } catch { return null; }
+  if (!eps.length || eps.length > AUDS_MAX_EPS) return null; // tag counts only
+  const auds = {};
+  for (let i = 0; i < eps.length; i += AUDS_CHUNK) {
+    await Promise.all(eps.slice(i, i + AUDS_CHUNK).map(async (ep) => {
+      try {
+        const url = `${BASE}/api/theme/episode/servers?episodeId=${ep.epId}`;
+        const j = await (await get(url)).json();
+        const html = unescapeBackslashes(String(j.html || ''));
+        const types = new Set(
+          [...html.matchAll(/data-type="([a-z]+)"/g)].map((m) => m[1])
+        );
+        auds[ep.num] = { sub: types.has('sub'), dub: types.has('dub') };
+      } catch { /* episode stays unprobed — UI keeps its tile */ }
+    }));
+  }
+  audsCache.set(numId, { t: Date.now(), auds });
+  return auds;
+}
 
 function numIdFromSlug(slug) {
   return slug.split('-').pop();
@@ -650,7 +795,133 @@ async function scheduleDay(date, tzOffset = 0) {
   return items;
 }
 
+// ---- cast (characters + voice actors) ----
+// The source site has no cast section, so this resolves the show on AniList
+// (matched against the slug's own words, so a bad search match never paints
+// the wrong show's cast) and returns each character with their Japanese VA.
+// One GraphQL request per opening; results are cached like the detail page.
+
+const CAST_TTL = 24 * 60 * 60 * 1000; // casts don't churn once a show aired
+const castCache = new Map();          // slug -> { t, data }
+let lastAniListAt = 0;                // polite pacing for the shared quota
+
+const CAST_QUERY = `query ($q: String) {
+  Page(perPage: 5) {
+    media(search: $q, type: ANIME, sort: SEARCH_MATCH) {
+      title { romaji english native }
+      characters(sort: [ROLE, RELEVANCE], perPage: 24) {
+        edges { role
+          node { name { full } image { large } }
+          voiceActors(language: JAPANESE) { name { full } image { large } }
+        }
+      }
+    }
+  }
+}`;
+
+function titleTokens(s) {
+  return String(s || '').toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').split(/\s+/).filter(Boolean);
+}
+
+// a candidate is the right show when their title words overlap — either set
+// contained in the other (“demon-slayer-kimetsu-no-yaiba” ⊇ “kimetsu no yaiba”)
+function titleMatch(slug, media) {
+  const wanted = new Set(titleTokens(slug.replace(/-+/g, ' ')));
+  const cand = new Set(
+    Object.values(media.title || {}).flatMap(titleTokens)
+  );
+  if (!wanted.size || !cand.size) return false;
+  const [small, big] = wanted.size <= cand.size ? [wanted, cand] : [cand, wanted];
+  for (const w of small) if (!big.has(w)) return false;
+  return true;
+}
+
+async function anilistCast(query) {
+  // one shared pacing gate — AniList's anonymous quota (90/min) is per IP
+  const wait = 1500 - (Date.now() - lastAniListAt);
+  if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+  lastAniListAt = Date.now();
+
+  const req = httpsMod.request('https://graphql.anilist.co', {
+    method: 'POST',
+    agent: siteAgents['https:'],
+    headers: {
+      'User-Agent': UA,
+      'Content-Type': 'application/json',
+      'Accept-Encoding': 'identity',
+    },
+  });
+  req.setTimeout(15000, () => req.destroy(new Error('AniList timeout')));
+  const payload = JSON.stringify({ query: CAST_QUERY, variables: { q: query } });
+  const chunks = [];
+  return await new Promise((resolve, reject) => {
+    req.on('response', (r) => {
+      if (r.statusCode !== 200) r.resume();
+      r.on('data', (c) => chunks.push(c));
+      r.on('end', () => {
+        if (r.statusCode !== 200) return reject(new Error(`AniList HTTP ${r.statusCode}`));
+        try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); } catch (e) { reject(e); }
+      });
+    });
+    req.on('error', reject);
+    req.end(payload);
+  });
+}
+
+async function cast(slug) {
+  if (!/^[a-z0-9-]+$/i.test(slug)) throw new Error('Bad slug');
+  const c = castCache.get(slug);
+  if (c && Date.now() - c.t < CAST_TTL) return c.data;
+
+  let data = { cast: [] };
+  try {
+    // the source's slugs carry season numbers ("one-piece-1"); those words
+    // rank the search away from the show, so retry without a trailing
+    // numeric run before giving up ('kaiju-no-8' keeps its 8 — only a match
+    // failure triggers the retry)
+    const base = decodeEntities(slug.replace(/-+/g, ' ')).trim();
+    let hit = null;
+    let body = await anilistCast(base);
+    let media = (body && body.data && body.data.Page && body.data.Page.media) || [];
+    hit = media.find((m) => titleMatch(slug, m)) || null;
+    if (!hit && /-\d+$/.test(slug)) {
+      const base2 = base.replace(/\s+\d+$/, '').trim();
+      body = await anilistCast(base2);
+      media = (body && body.data && body.data.Page && body.data.Page.media) || [];
+      // the wanted words drop the number too ("one piece 1" → match "One Piece")
+      hit = media.find((m) => titleMatch(slug.replace(/-\d+$/, ''), m)) || null;
+    }
+    const edges = (hit && hit.characters && hit.characters.edges) || [];
+    data.cast = edges
+      .map((e) => ({
+        name: e.node && e.node.name && e.node.name.full,
+        image: (e.node && e.node.image && e.node.image.large) || null,
+        main: e.role === 'MAIN',
+        va: e.voiceActors && e.voiceActors[0]
+          ? {
+              name: e.voiceActors[0].name && e.voiceActors[0].name.full,
+              image: (e.voiceActors[0].image && e.voiceActors[0].image.large) || null,
+            }
+          : null,
+      }))
+      .filter((x) => x.name);
+  } catch (e) {
+    // AniList unreachable / throttled: an empty list (tab shows a hint) beats
+    // failing the tap — but don't cache failures longer than a few minutes
+    castCache.set(slug, { t: Date.now() - (CAST_TTL - 5 * 60 * 1000), data });
+    throw e;
+  }
+  if (!data.cast.length) {
+    // an unmatched show isn't proof: cache only briefly so a fixed match can
+    // succeed (and a transient AniList hiccup can retry) later that day
+    castCache.set(slug, { t: Date.now() - (CAST_TTL - 5 * 60 * 1000), data });
+    return data;
+  }
+  castCache.set(slug, { t: Date.now(), data });
+  return data;
+}
+
 module.exports = {
-  UA, BASE, search, recentlyUpdated, browse, browsePath, upcoming, details, spotlight,
-  episodes, audioTracks, getSources, isDeadEp, ratings, ratingFor, scheduleDay,
+  UA, BASE, rawGet, search, recentlyUpdated, mostPopular, topRated, browse, browsePath, upcoming, details, spotlight,
+  episodes, epAuds, audioTracks, getSources, isDeadEp, ratings, ratingFor, scheduleDay, cast,
 };

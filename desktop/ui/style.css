@@ -8,7 +8,27 @@
   --accent: #35d5bf;
   --accent-dim: #1fa392;
   --danger: #ff6b6b;
+  /* text sitting ON imagery (hero title, poster captions): veils stay dark in
+     both modes, so this stays light — it is NOT swapped by the light theme */
+  --on-media: #e8ecf4;
+  --on-media-muted: #8b94a7;
   --radius: 10px;
+}
+
+/* light theme: just the neutrals flip and the accent deepens so it still
+   reads on pale backgrounds. Posters/veils, video surfaces (#000), dialog
+   scrims and the dark-on-accent text literals are intentionally left dark —
+   they sit on imagery or accent fills where dark is correct in both modes. */
+:root[data-theme='light'] {
+  --bg: #eef1f6;
+  --bg2: #ffffff;
+  --bg3: #e4e9f2;
+  --border: #d5dce8;
+  --text: #1a2230;
+  --muted: #5e6a80;
+  --accent: #0f9e8c;
+  --accent-dim: #0b8677;
+  --danger: #e0574f;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -42,13 +62,15 @@ body {
 }
 
 /* ---- top bar ---- */
+/* transparent: no bar styling — the logo and icons float over the page.
+   On home the hero art below fades up into the page bg (its own ::before
+   gradient), so the two read as one surface. */
 #topbar {
   display: flex;
   align-items: center;
   gap: 16px;
-  padding: 12px 20px;
-  background: var(--bg2);
-  border-bottom: 1px solid var(--border);
+  padding: 8px 20px;
+  background: transparent;
   flex-shrink: 0;
 }
 #brand {
@@ -194,8 +216,9 @@ body {
   margin-bottom: 10px;
 }
 .notif-head h3 { font-size: 14px; color: var(--text); }
-#notifList { display: flex; flex-direction: column; gap: 8px; max-height: 320px; overflow-y: auto; }
+#notifList { display: flex; flex-direction: column; gap: 8px; max-height: 320px; overflow-y: auto; overflow-x: clip; /* the rows' comet rims spill 3px — don't let that open a h-scrollbar */ }
 .notif-item {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -209,6 +232,30 @@ body {
   font-family: inherit;
 }
 .notif-item:hover { border-color: var(--accent-dim); }
+/* the bell panel's new-episode rows carry the NEW pill's comet rim — same
+   masked conic ring (shares --nb-a + newBadgeSpin), dimmed a touch and
+   slowed slightly so a stack of rows doesn't strobe */
+@supports ((-webkit-mask-composite: xor) or (mask-composite: exclude)) {
+  .notif-item::after {
+    content: '';
+    position: absolute;
+    inset: -3px;
+    border-radius: 13px;
+    padding: 3px;
+    background: conic-gradient(
+      from var(--nb-a),
+      var(--accent-dim) 0deg 320deg,
+      #ffffff 338deg,
+      rgba(158, 255, 224, 0.75) 348deg,
+      var(--accent-dim) 357deg 360deg
+    );
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+    animation: newBadgeSpin 3.2s linear infinite;
+  }
+}
 .notif-item .notif-title {
   font-size: 13px;
   font-weight: 600;
@@ -219,6 +266,17 @@ body {
 .notif-item .notif-sub { font-size: 11px; color: var(--accent); }
 .notif-item .notif-hint { font-size: 10px; color: var(--muted); }
 /* navbar avatar: the signed-in user's photo — tapping it opens the profile */
+.offline-pill {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px 12px;
+  white-space: nowrap;
+  pointer-events: none; /* status, not a control */
+}
 #accountBtn {
   background: var(--bg3);
   border: 1px solid var(--border);
@@ -308,6 +366,68 @@ body.on-feedback #backBtn:not([hidden]) { display: inline-flex; }
   padding: 7px 10px;
   font-size: 13px;
 }
+
+/* ---- custom dropdowns ----
+   Every <select> is upgraded by makeDropdown() in app.js: Android's native
+   select menu is a system dialog (own font, radio glyphs, wrong theme) — the
+   native control stays in the DOM synced but hidden, while this trigger opens
+   a themed popup instead. Colors all flow from the tokens → both themes win. */
+.dd-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  background: var(--bg2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 10px;
+  font-size: 13px;
+  cursor: pointer;
+  min-width: 0;
+  max-width: 100%;
+  text-align: left;
+}
+.dd-trigger .dd-label {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.dd-trigger .icon { flex: none; width: 14px; height: 14px; color: var(--muted); }
+.dd-trigger:hover { border-color: var(--accent); }
+.bf .dd-trigger { font-size: 12px; padding: 6px 10px; min-width: 110px; max-width: 180px; }
+.dd-pop {
+  position: fixed;
+  z-index: 230; /* above toasts (210) and the gates (200) */
+  min-width: 150px;
+  max-width: min(78vw, 320px);
+  max-height: 46vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 14px 34px rgba(3, 6, 10, 0.5);
+  padding: 6px;
+  animation: popIn 0.15s ease;
+}
+.dd-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 0;
+  color: var(--text);
+  font-size: 13px;
+  padding: 9px 10px;
+  border-radius: 7px;
+  cursor: pointer;
+}
+.dd-item:hover { background: var(--bg3); }
+.dd-item .icon { flex: none; width: 15px; height: 15px; margin-left: auto; color: var(--accent); opacity: 0; }
+.dd-item.sel { color: var(--accent); font-weight: 600; }
+.dd-item.sel .icon { opacity: 1; }
 #settingsCard .hint { font-size: 11px; overflow-wrap: break-word; }
 .setting-sep { border: none; border-top: 1px solid var(--border); margin: 12px 0; }
 
@@ -432,7 +552,7 @@ body.on-feedback #backBtn:not([hidden]) { display: inline-flex; }
 /* ---- profile page — centered identity card, avatar overlaps the top edge ---- */
 #profileCard {
   max-width: 520px;
-  margin: 56px auto 0;   /* leaves room for the half-overlapping avatar */
+  margin: 76px auto 0;   /* leaves room for the half-overlapping avatar */
   background: var(--bg2);
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -444,9 +564,9 @@ body.on-feedback #backBtn:not([hidden]) { display: inline-flex; }
   text-align: center;
 }
 #profileAvatarWrap {
-  width: 92px;
-  height: 92px;
-  margin-top: -46px;   /* half in, half out of the card */
+  width: 132px;
+  height: 132px;
+  margin-top: -66px;   /* half in, half out of the card */
   flex: none;
 }
 #profileAvatar, #profileAvatarFallback {
@@ -462,12 +582,12 @@ body.on-feedback #backBtn:not([hidden]) { display: inline-flex; }
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 34px;
+  font-size: 48px;
   font-weight: 700;
   color: var(--accent);
   background: var(--bg3);
 }
-#profileAvatarFallback .icon { width: 34px; height: 34px; }
+#profileAvatarFallback .icon { width: 48px; height: 48px; }
 #profileNameRow { display: flex; align-items: center; gap: 6px; margin-top: 2px; min-width: 0; }
 #profileName { font-size: 20px; font-weight: 700; overflow-wrap: anywhere; }
 #profileVerified {
@@ -495,10 +615,10 @@ body.on-feedback #backBtn:not([hidden]) { display: inline-flex; }
 }
 .pill-accent:hover { border-color: var(--accent); filter: brightness(1.12); }
 @media (max-width: 540px) {
-  #profileCard { margin-top: 44px; padding: 0 16px 16px; }
-  #profileAvatarWrap { width: 76px; height: 76px; margin-top: -38px; }
-  #profileAvatarFallback { font-size: 28px; }
-  #profileAvatarFallback .icon { width: 28px; height: 28px; }
+  #profileCard { margin-top: 60px; padding: 0 16px 16px; }
+  #profileAvatarWrap { width: 104px; height: 104px; margin-top: -52px; }
+  #profileAvatarFallback { font-size: 38px; }
+  #profileAvatarFallback .icon { width: 38px; height: 38px; }
   #profileName { font-size: 17px; }
 }
 
@@ -671,7 +791,7 @@ body:not(.sidebar-open) #sidebar {
 
 /* ---- main / views ---- */
 #main { flex: 1; overflow-y: auto; }
-section { padding: 20px 24px; }
+section { padding: 8px 24px 20px; }   /* bottom keeps 20px — top is tight against the icon bar */
 h2 { font-size: 16px; margin: 18px 0 12px; color: var(--muted); font-weight: 600; }
 
 #emptyState {
@@ -715,6 +835,64 @@ h2 { font-size: 16px; margin: 18px 0 12px; color: var(--muted); font-weight: 600
 .sk-syn.w80 { width: 80%; }
 .sk-syn.w60 { width: 60%; }
 .sk-ep { width: 46px; height: 34px; }
+/* non-grid surfaces: schedule rows, feedback cards, hero, upcoming marquee */
+.sk-sched {
+  display: flex;
+  gap: 12px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px;
+}
+.sk-sched-thumb { width: 96px; flex: none; aspect-ratio: 2 / 3; border-radius: 8px; }
+.sk-sched-info { flex: 1; }
+.sk-sched-info .sk-line { margin: 9px 0 0; }
+.sk-sched-info .sk-line.short { margin-bottom: 14px; }
+.sk-fb {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px;
+  margin-bottom: 10px;
+}
+.sk-fb .sk-line { margin: 8px 0 0; }
+.sk-hero {
+  position: relative;
+  overflow: hidden;
+  height: clamp(300px, 42vw, 430px); /* matches #heroCarousel at every width */
+  border-radius: 16px;
+}
+.sk-hero-lines {
+  position: absolute;
+  left: 18px;
+  bottom: 18px;
+  width: 42%;
+  max-width: 330px;
+}
+.sk-hero-lines .sk-line { margin: 10px 0 0; }
+.sk-hero-lines .sk-line:nth-child(2) { width: 58%; }
+#upSkeleton {
+  display: flex;
+  overflow: hidden;
+  margin-bottom: 6px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px;
+  gap: 10px;
+  height: 72px;
+  box-sizing: border-box;
+}
+.sk-up-item {
+  width: 170px;
+  height: 100%;
+  border-radius: 8px;
+  flex: none;
+}
+@media (max-width: 480px) {
+  .sk-sched-thumb { width: 78px; }
+  .sk-hero-lines { left: 12px; bottom: 12px; }
+}
 
 /* ---- grids ---- */
 .grid {
@@ -761,16 +939,25 @@ h2 { font-size: 16px; margin: 18px 0 12px; color: var(--muted); font-weight: 600
   display: block;
   background: var(--bg3);
 }
+/* title lives ON the cover art: bottom-anchored faded gradient + clamped text */
 .card .card-title {
-  /* no bottom padding: newer Chromium clamps the box to 2 rows but still
-     paints the 3rd row into padding-bottom — margin keeps the spacing */
-  padding: 8px 10px 0;
-  margin-bottom: 10px;
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 40px 10px 8px;
+  background: linear-gradient(to top, rgba(8, 11, 17, 0.97) 30%, rgba(8, 11, 17, 0.6) 75%, rgba(8, 11, 17, 0));
+  color: var(--on-media);
+  pointer-events: none;   /* hover/click stay aimed at the card */
+}
+/* the clamp sits on a padded inner box: Chromium's clamp still paints the
+   4th row into a bottom padding of its own, so keep that padding-free */
+.card .card-title-text {
   font-size: 13px;
   line-height: 1.35;
-  /* clamp to 2 rows; hovering the card shows the full title as a tooltip */
+  /* clamp to 3 rows; hovering the card shows the full title as a tooltip */
   display: -webkit-box;
-  -webkit-line-clamp: 2;
+  -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
@@ -822,8 +1009,23 @@ h2 { font-size: 16px; margin: 18px 0 12px; color: var(--muted); font-weight: 600
 .section-head h2 { margin-bottom: 0; }
 #profileView .fav-btn.active { color: var(--danger); }
 
-#moreRow { text-align: center; margin: 20px 0; }
-#moreBtn, .pill-btn {
+/* ---- infinite-scroll footer: hidden spacer until it enters the trigger
+   zone, then the scroll loader flips it to the spinner (.busy) or the end
+   marker (.end) ---- */
+.inf-footer {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 24px 0 34px;
+  min-height: 60px;
+}
+.inf-footer .inf-spinner { display: none; }
+.inf-footer .inf-end { display: none; color: var(--muted); font-size: 13px; }
+.inf-footer.busy .inf-spinner { display: block; }
+.inf-footer.end .inf-end { display: block; }
+
+.pill-btn {
   background: var(--bg3);
   color: var(--text);
   border: 1px solid var(--border);
@@ -832,7 +1034,7 @@ h2 { font-size: 16px; margin: 18px 0 12px; color: var(--muted); font-weight: 600
   cursor: pointer;
   font-size: 12px;
 }
-#moreBtn:hover, .pill-btn:hover { border-color: var(--accent-dim); color: var(--accent); }
+.pill-btn:hover { border-color: var(--accent-dim); color: var(--accent); }
 .pill-btn:disabled { opacity: .55; cursor: default; pointer-events: none; } /* update row while downloading */
 #favBtn.active { border-color: var(--danger); color: var(--danger); }
 #favBtn.active:hover { border-color: var(--danger); color: var(--danger); }
@@ -892,17 +1094,6 @@ h2 { font-size: 16px; margin: 18px 0 12px; color: var(--muted); font-weight: 600
   min-width: 110px;
   max-width: 180px;
 }
-#browsePager {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 14px;
-  margin: 20px 0;
-}
-#browsePageLabel { color: var(--muted); font-size: 13px; }
-#browsePrev:disabled, #browseNext:disabled { opacity: 0.35; cursor: default; }
-#browsePrev:disabled:hover, #browseNext:disabled:hover { border-color: var(--border); color: var(--text); }
-
 /* ---- detail view ---- */
 .back-btn {
   background: none;
@@ -917,6 +1108,11 @@ h2 { font-size: 16px; margin: 18px 0 12px; color: var(--muted); font-weight: 600
   margin-bottom: 10px;
 }
 .back-btn:hover { color: var(--text); border-color: var(--accent-dim); }
+/* two of them sit on always-dark surfaces (detail hero backdrop, player
+   scrim): their muted text must not get darker in the light theme */
+#detailHero .back-btn, .player-loading .back-btn, .player-loading #playerStatus {
+  color: var(--on-media-muted);
+}
 
 /* ---- detail hero: the show's own poster, blurred, behind the head ---- */
 #detailHero {
@@ -969,12 +1165,19 @@ h2 { font-size: 16px; margin: 18px 0 12px; color: var(--muted); font-weight: 600
   border-radius: var(--radius);
   background: var(--bg3);
   flex-shrink: 0;
+  transition: opacity 0.25s ease;
   /* opt out of the flex row's align-items:stretch — stretched to the synopsis
      block's height, the 160px poster renders skinny and cover-cropped */
   align-self: flex-start;
 }
+/* invisible (plain bg3 card) until an image actually decodes — a failing
+   first fetch must not flash the browser's broken-image glyph */
+#detailPoster:not(.ok) { opacity: 0; }
 #detailMeta { flex: 1; min-width: 0; }
 #detailTitle {
+  /* sits on the brightness(0.45) darkened blurred backdrop in both layouts —
+     stays light even in the light theme (like the poster captions) */
+  color: var(--on-media);
   font-size: 26px;
   line-height: 1.2;
   margin-top: 6px;
@@ -996,7 +1199,8 @@ h2 { font-size: 16px; margin: 18px 0 12px; color: var(--muted); font-weight: 600
   margin-top: 8px;
   font-size: 13px;
   letter-spacing: 0.02em;
-  color: var(--muted);
+  /* over the darkened hero backdrop on both layouts */
+  color: var(--on-media-muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1054,6 +1258,11 @@ h2 { font-size: 16px; margin: 18px 0 12px; color: var(--muted); font-weight: 600
   white-space: nowrap;
 }
 .chip-label { font-size: 11px; color: var(--muted); margin-right: 2px; }
+/* faint chip: non-interactive markers like the offline "Saved copy" tag */
+.chip-faint {
+  opacity: 0.65;
+  border-style: dashed;
+}
 .chip-btn {
   cursor: pointer;
   font-family: inherit;
@@ -1078,23 +1287,6 @@ h2 { font-size: 16px; margin: 18px 0 12px; color: var(--muted); font-weight: 600
 }
 .link-btn:hover { text-decoration: underline; }
 
-/* ---- browse page numbers ---- */
-#browsePages { display: flex; gap: 4px; flex-wrap: wrap; justify-content: center; }
-.page-btn {
-  min-width: 30px;
-  background: var(--bg2);
-  border: 1px solid var(--border);
-  color: var(--muted);
-  border-radius: 8px;
-  padding: 6px 8px;
-  cursor: pointer;
-  font-size: 12px;
-  font-weight: 600;
-}
-.page-btn:hover { color: var(--text); border-color: var(--accent-dim); }
-.page-btn.active { background: var(--accent); color: #06231f; border-color: var(--accent); }
-.page-gap { color: var(--muted); padding: 4px 2px; font-size: 12px; }
-
 .segmented {
   display: inline-flex;
   border: 1px solid var(--border);
@@ -1114,11 +1306,17 @@ h2 { font-size: 16px; margin: 18px 0 12px; color: var(--muted); font-weight: 600
   background: var(--accent);
   color: #06231f;
 }
+/* home tabs sit between sections — centered with breathing room above/below */
+#homeTabs { display: flex; width: fit-content; margin: 18px auto 8px; }
+#homeTabs button { padding: 7px 18px; font-size: 13px; }
+@media (max-width: 480px) {
+  #homeTabs button { padding: 6px 12px; font-size: 12px; }
+}
 
-/* ---- "//"-style section headers ---- */
+/* ---- "|"-style section headers ---- */
 .h-slash { margin: 0; font-size: 13px; letter-spacing: 0.08em; color: var(--text); font-weight: 700; }
 .h-slash::before {
-  content: '//';
+  content: '|';
   color: var(--accent);
   font-weight: 700;
   margin-right: 7px;
@@ -1127,11 +1325,18 @@ h2 { font-size: 16px; margin: 18px 0 12px; color: var(--muted); font-weight: 600
 /* ---- detail tab row ---- */
 .detail-tabs {
   display: flex;
+  flex-wrap: nowrap; /* narrow screens: the row scrolls instead of clipping tabs */
   gap: 4px;
   margin: 6px 0 14px;
   border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  white-space: nowrap;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
 }
+.detail-tabs::-webkit-scrollbar { display: none; }
 .detail-tab {
+  flex: 0 0 auto;
   background: none;
   border: none;
   border-bottom: 2px solid transparent;
@@ -1144,7 +1349,7 @@ h2 { font-size: 16px; margin: 18px 0 12px; color: var(--muted); font-weight: 600
   cursor: pointer;
 }
 .detail-tab::before {
-  content: '//';
+  content: '|';
   color: var(--muted);
   margin-right: 5px;
   font-weight: 700;
@@ -1157,6 +1362,50 @@ h2 { font-size: 16px; margin: 18px 0 12px; color: var(--muted); font-weight: 600
    on the detail page the info card stays inline under the title block */
 #detailTabs [data-tab="details"] { display: none; }
 #playerView.in-player #detailTabs [data-tab="details"] { display: block; }
+
+/* ---- //CAST: character rows (image + name + Japanese VA) ---- */
+.cast-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 8px;
+  padding: 4px 0 12px;
+}
+.cast-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  background: var(--bg2, rgba(255, 255, 255, 0.04));
+  border: 1px solid var(--line, rgba(255, 255, 255, 0.08));
+  border-radius: 10px;
+  min-width: 0;
+}
+.cast-card.lead { border-color: var(--accent-dim); }
+.cast-card img {
+  width: 44px;
+  height: 44px;
+  border-radius: 8px;
+  object-fit: cover;
+  flex: none;
+}
+.cast-txt { min-width: 0; }
+.cast-name {
+  font-size: 13px;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#panelCast .lead .cast-name { color: var(--accent); }
+.cast-va {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#castLoad { padding: 18px 0; }
+#panelCast .hint { margin: 6px 0 12px; }
 
 /* ---- episodes header row: "// N EPISODES" + FIND EP ---- */
 .ep-head {
@@ -1250,13 +1499,38 @@ h2 { font-size: 16px; margin: 18px 0 12px; color: var(--muted); font-weight: 600
 .ep-btn.watched:hover { color: var(--accent); opacity: 1; }
 .ep-btn.current { background: var(--accent); border-color: var(--accent); color: #06231f; }
 .ep-btn.current .ep-type { color: #06231f; opacity: 0.75; }
+/* fresh-episode tiles (favorited show, unviewed releases): the NEW pill's
+   comet rim — same masked conic ring, slightly slowed so a row of tiles
+   doesn't strobe; border hints at newness even when the ring can't render */
+.ep-btn.ep-new { position: relative; border-color: var(--accent-dim); }
+@supports ((-webkit-mask-composite: xor) or (mask-composite: exclude)) {
+  .ep-btn.ep-new::after {
+    content: '';
+    position: absolute;
+    inset: -3px;
+    border-radius: 11px;
+    padding: 3px;
+    background: conic-gradient(
+      from var(--nb-a),
+      var(--accent-dim) 0deg 320deg,
+      #ffffff 338deg,
+      rgba(158, 255, 224, 0.9) 348deg,
+      var(--accent-dim) 357deg 360deg
+    );
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+    animation: newBadgeSpin 3.2s linear infinite;
+  }
+}
 
 /* ---- seasons cards ---- */
 #panelSeasons .slider .card { width: 148px; }
 .season-badge {
   position: absolute;
   left: 6px;
-  bottom: 6px;
+  top: 6px;    /* bottom-left now belongs to the title overlay */
   background: rgba(11, 14, 20, 0.85);
   border: 1px solid var(--accent-dim);
   color: var(--accent);
@@ -1472,14 +1746,8 @@ body.pip-full #playerBottom {
 #playerView.in-player #watchUpOverlay { position: fixed; } /* centre on the viewport */
 
 /* the audio/server/quality controls (moved into the slot from #playerTopRow)
-   sit between the title header and the tab row */
-#playerView.in-player #playerRight {
-  display: flex;
-  justify-content: center;
-  flex-wrap: wrap;
-  margin: 10px 0 14px;
-  gap: 8px;
-}
+   sit between the title header and the tab row
+   → obsolete: they live on the pv overlay now (#pvChips, below) */
 /* the info card stays whole in the player's //DETAILS tab, even at phone
    widths where the detail page would split body/list around the poster */
 #playerView.in-player #detailInfo {
@@ -1503,6 +1771,12 @@ body.pip-full #playerBottom {
   margin-top: 0;
   margin-bottom: 2px;
 }
+/* the slot re-parks the title + meta line on the page background — undo the
+   mobile detail page's dark-backdrop ink (that treatment lives only where
+   #detailHero's blackened backdrop sits behind them) */
+#playerView.in-player #detailTitle { color: var(--text); }
+#playerView.in-player #detailMeta .meta-key { color: var(--muted); }
+#playerView.in-player #detailMeta .meta-val { color: var(--text); }
 #playerView.in-player #detailMetaLine { flex: 0 1 auto; margin: 0; min-width: 0; }
 #playerView.in-player #detailControls { flex: 0 0 auto; margin: 0; margin-left: auto; }
 #playerView.in-player .fav-pill { width: 34px; height: 34px; }
@@ -1517,10 +1791,15 @@ body.pip-full #playerBottom {
 }
 #playerWrap:fullscreen #playerHead { display: block; }
 
-/* PiP mirror: same stripping as today, plus the detail slot */
+/* PiP mirror: same stripping as today, plus the detail slot. The background
+   goes black: any residual letterbox band (surface vs window rounding, a
+   mid-transition aspect change) reads as a video frame, never as a white bar. */
 body.pip-full #playerDetailSlot { display: none !important; }
 body.pip-full #playerView,
 body.pip-full #playerWrap { height: 100% !important; }
+body.pip-full #playerView,
+body.pip-full #playerWrap,
+body.pip-full #videoArea { background: #000 !important; }
 body.pip-full #videoArea {
   flex: 1 1 auto !important;
   aspect-ratio: auto !important;
@@ -1678,68 +1957,116 @@ svg.google {
 .sched-go .icon { width: 22px; height: 22px; }
 .sched-empty { color: var(--muted); font-size: 13px; padding: 18px 0; }
 
-/* ---- toast ---- */
+/* ---- toast: pill with status icon; err variant tints red ---- */
 #toast {
   position: fixed;
   bottom: 24px;
   left: 50%;
   transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 9px;
   background: var(--bg3);
   border: 1px solid var(--border);
   color: var(--text);
-  padding: 10px 20px;
-  border-radius: var(--radius);
+  padding: 11px 18px 11px 15px;
+  border-radius: 999px;
   z-index: 50;
-  max-width: 70%;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+  max-width: min(78%, 420px);
+  font-size: 13px;
+  font-weight: 600;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.55);
 }
-#toast.err { border-color: var(--danger); }
+#toast .icon { width: 16px; height: 16px; flex: none; color: var(--accent); }
+#toast.err { border-color: rgba(255, 107, 107, 0.45); }
+#toast.err .icon { color: var(--danger); }
 
 /* ---- themed confirm dialog (replaces window.confirm) ---- */
 #confirmDlg {
   position: fixed;
   inset: 0;
   z-index: 100;   /* above the drawer (80), mini player (85), below nothing */
-  background: rgba(0, 0, 0, 0.6);
+  background: rgba(4, 6, 10, 0.66);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 24px;
 }
-#confirmDlg:not([hidden]) { animation: fadeUp 0.2s ease; }
+#confirmDlg:not([hidden]) { animation: dlgFade 0.18s ease; }
 .dlg-card {
   width: min(340px, 100%);
-  background: var(--bg3);   /* one step above the scrim-dimmed page */
+  /* one step above the scrim-dimmed page, with a soft accent glow at the top */
+  background:
+    radial-gradient(140px 64px at 50% 0%, rgba(53, 213, 191, 0.10), transparent 70%),
+    var(--bg3);
   border: 1px solid var(--border);
-  border-radius: 14px;
-  padding: 18px;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55);
+  border-top-color: rgba(53, 213, 191, 0.35);
+  border-radius: 20px;
+  padding: 22px 20px 18px;
+  text-align: center;
+  box-shadow:
+    0 18px 50px rgba(0, 0, 0, 0.6),
+    0 2px 8px rgba(0, 0, 0, 0.4);
+  animation: dlgPop 0.26s cubic-bezier(0.2, 0.9, 0.3, 1.15);
+}
+.dlg-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  margin: 0 auto 12px;
+  border-radius: 999px;
+  background: rgba(53, 213, 191, 0.12);
+  border: 1px solid rgba(53, 213, 191, 0.3);
+  color: var(--accent);
+}
+.dlg-icon .icon { width: 22px; height: 22px; }
+/* destructive confirms tint the icon disc red */
+.dlg-icon.danger {
+  background: rgba(255, 107, 107, 0.12);
+  border-color: rgba(255, 107, 107, 0.35);
+  color: var(--danger);
 }
 .dlg-card h3 {
-  margin: 0 0 8px;
-  font-size: 15px;
+  margin: 0 0 6px;
+  font-size: 16px;
   color: var(--text);
 }
 .dlg-card p {
   margin: 0;
   font-size: 13px;
-  line-height: 1.5;
+  line-height: 1.55;
   color: var(--muted);
 }
 .dlg-actions {
   display: flex;
-  justify-content: flex-end;
   gap: 10px;
-  margin-top: 18px;
+  margin-top: 20px;
 }
-.dlg-actions .pill-btn { padding: 7px 16px; font-size: 13px; }
-/* the destructive action is the one that gets emphasis: filled accent pill */
+/* full-width split, 40px tall — Android-sized tap targets */
+.dlg-actions .pill-btn {
+  flex: 1;
+  min-height: 40px;
+  padding: 10px 14px;
+  font-size: 13px;
+}
+/* the primary action gets emphasis: filled accent pill */
 .dlg-ok {
   background: var(--accent);
   border-color: var(--accent);
-  color: #062a26;
+  color: #04241f;
 }
-.dlg-ok:hover { background: var(--accent); color: #062a26; opacity: .9; }
+.dlg-ok:hover { background: var(--accent); color: #04241f; opacity: .92; }
+/* destructive confirms make the primary action the danger-filled one */
+.dlg-ok.danger {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #2a0808;
+}
+.dlg-ok.danger:hover { background: var(--danger); color: #2a0808; opacity: .92; }
 
 /* ---- upcoming marquee (Home, top strip) ----
    Each .up-item carries its own right margin (no flex gap) so the track's
@@ -1808,6 +2135,60 @@ svg.google {
 }
 .up-date { font-size: 11px; color: var(--accent); }
 
+/* ---- NEW episode badge: show has an active new-episode notification ---- */
+.new-badge {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 2;
+  background: var(--accent);
+  color: #0b0e14;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.6px;
+  border-radius: 999px;
+  padding: 3px 8px;
+  pointer-events: none;
+}
+/* animated border: comet sweeps the pill rim. The ::after is a conic
+   gradient masked down to a 3px ring (content-box xor mask), so only the
+   rim is painted and the pill face stays untouched. */
+@property --nb-a {
+  syntax: '<angle>';
+  inherits: false;
+  initial-value: 0deg;
+}
+@supports ((-webkit-mask-composite: xor) or (mask-composite: exclude)) {
+  .new-badge::after {
+    content: '';
+    position: absolute;
+    inset: -3px;
+    border-radius: 999px;
+    padding: 3px;
+    background: conic-gradient(
+      from var(--nb-a),
+      var(--accent) 0deg 320deg,
+      #ffffff 338deg,
+      rgba(158, 255, 224, 0.9) 348deg,
+      var(--accent) 357deg 360deg
+    );
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+    animation: newBadgeSpin 2.4s linear infinite;
+  }
+}
+@keyframes newBadgeSpin {
+  to { --nb-a: 360deg; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .new-badge::after { animation: none; background: var(--accent); }
+  /* same for the bell panel + episode tiles: no comet, just a static accent rim */
+  .notif-item::after { animation: none; background: var(--accent-dim); }
+  .ep-btn.ep-new::after { animation: none; background: var(--accent-dim); }
+}
+
 /* ---- release-date badge on Coming soon cards ---- */
 /* wraps the cover art so badges (date) anchor to the image, not the card */
 .card-media {
@@ -1815,7 +2196,7 @@ svg.google {
 }
 .date-badge {
   position: absolute;
-  bottom: 8px;
+  top: 8px;    /* bottom-left now belongs to the title overlay */
   left: 8px;
   z-index: 2;
   background: rgba(8, 11, 17, 0.85);
@@ -1886,6 +2267,16 @@ body.dragging-slider { user-select: none; -webkit-user-select: none; }
   from { opacity: 0; transform: translateY(-6px) scale(0.98); }
   to { opacity: 1; transform: none; }
 }
+/* confirm-dialog entry: scrim fades, card pops up into place */
+@keyframes dlgFade {
+  from { opacity: 0; }
+}
+@keyframes dlgPop {
+  from { opacity: 0; transform: translateY(16px) scale(0.94); }
+}
+@media (prefers-reduced-motion: reduce) {
+  #confirmDlg, .dlg-card, #toast { animation: none; }
+}
 section:not([hidden]) { animation: fadeUp 0.24s ease; }
 #playerView:not([hidden]) { animation: none; } /* video must not flicker on entry */
 .grid > * { animation: fadeUp 0.28s ease both; }
@@ -1927,7 +2318,9 @@ button, select, .back-btn, .pill-btn {
   position: fixed;
   inset: 0;
   z-index: 210;
-  background: var(--bg);
+  /* brand-dark in BOTH themes: the collage gaps and backdrop read right, and
+     the light logo keeps its contrast */
+  background: #0b0e14;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -1936,6 +2329,9 @@ button, select, .back-btn, .pill-btn {
   padding: 24px;
 }
 #loginGate[hidden] { display: none; }
+/* the gate is opaque dark in both themes — its text keeps the dark-theme ink */
+#loginGate h2 { color: #e8ecf4; }
+#loginGate .hint, #loginGate #loginStatus { color: #98a2b3; }
 #loginGate .login-logo {
   width: 250px;
   max-width: 68vw;
@@ -2126,6 +2522,19 @@ button, select, .back-btn, .pill-btn {
   height: clamp(300px, 42vw, 430px);
 }
 #heroSlides, #heroSlides .hero-slide { position: absolute; inset: 0; }
+/* dissolve the art's top edge into the page background so the hero flows
+   out of the page instead of starting as a hard-edged card */
+#heroCarousel::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: clamp(64px, 14%, 96px);
+  z-index: 2;
+  pointer-events: none;
+  background: linear-gradient(180deg, var(--bg) 0%, rgba(11, 14, 20, 0) 100%);
+}
 .hero-slide {
   opacity: 0;
   transition: opacity 0.6s ease;
@@ -2175,7 +2584,7 @@ button, select, .back-btn, .pill-btn {
   padding: 4px 9px;
 }
 .hero-title {
-  color: var(--text);
+  color: var(--on-media);
   font-size: clamp(22px, 4.6vw, 34px);
   font-weight: 800;
   line-height: 1.15;
@@ -2203,7 +2612,7 @@ button, select, .back-btn, .pill-btn {
   font-weight: 700;
 }
 .hero-watch:hover { background: var(--accent-dim); color: #fff; }
-.hero-details { background: rgba(4, 6, 10, 0.55); color: var(--text); }
+.hero-details { background: rgba(4, 6, 10, 0.55); color: var(--on-media); }
 .hero-details:hover { background: var(--bg3); }
 /* dots: active slide's indicator is a wide bar, the rest small round dots */
 #heroDots {
@@ -2425,12 +2834,12 @@ button, select, .back-btn, .pill-btn {
   }
 
   /* ---- sections / detail ---- */
-  section { padding: 14px 16px 20px; }   /* #playerView keeps its own padding: 0 */
+  section { padding: 8px 16px 20px; }   /* #playerView keeps its own padding: 0 */
   /* head as a two-column grid: the poster owns column 1 across the title and
      info-list rows, and the Japanese/Studio/Producers/Status list fills the
      formerly empty space to its right; synopsis card drops to a full row */
   /* hero full-bleed tracks the section padding at this breakpoint */
-  #detailHero { margin: -14px -16px 10px; padding: 14px 16px 12px; }
+  #detailHero { margin: -8px -16px 10px; padding: 8px 16px 12px; }
   #detailGrid { display: grid; grid-template-columns: 128px 1fr; gap: 6px 14px; }
   #detailMeta { display: contents; }
   /* no hover tooltip on mobile — the full title wraps instead of clamping */
@@ -2439,16 +2848,19 @@ button, select, .back-btn, .pill-btn {
     display: block;
     overflow: visible;
   }
-  /* poster spans every right-column row (title + info list + meta line) so a
-     short info block can't leave a stretched empty band next to it, and so it
-     bottoms out level with the meta line */
+  /* poster spans every right-column row (title + meta line + info list) so a
+     short info block can't leave a stretched empty band next to it */
   #detailPoster { grid-column: 1; grid-row: 1 / span 3; }
-  #detailMetaRows { grid-column: 2; grid-row: 2; margin-top: 0; }
+  #detailMetaRows { grid-column: 2; grid-row: 3; margin-top: 0; }
   /* #detailMeta/#detailInfo{display:contents} unwrap these into the grid;
      the heart (#detailControls) is absolute in the hero corner, out of the flow */
-  /* metaLine pinned to row 3 explicitly — auto placement would skip past the
-     poster's span area (sparse collision) and open a phantom 0-height track */
-  #detailMetaLine { grid-column: 1 / -1; grid-row: 3; margin-top: 0; white-space: normal; }
+  /* metaLine sits right under the title (in the title's own column, next to
+     the art) instead of a full-width row that collides with the poster span */
+  #detailMetaLine { grid-column: 2; grid-row: 2; margin-top: 0; white-space: normal; }
+  /* pulled out of their card onto the darkened hero backdrop here — on desktop
+     these sit on the #detailInfo surface instead, where the plain tokens win */
+  #detailMeta .meta-key { color: var(--on-media-muted); }
+  #detailMeta .meta-val { color: var(--on-media); }
   #detailView #detailControls { top: -40px; right: 4px; }
   #favBtn { width: 38px; height: 38px; padding: 0; }
   #detailInfo { display: contents; }
@@ -2473,14 +2885,13 @@ button, select, .back-btn, .pill-btn {
   #detailControls { flex-wrap: wrap; gap: 10px; }
   #browseFilters { gap: 8px; }
   .bf { flex: 1 1 30%; }
-  .bf select { min-width: 0; max-width: none; width: 100%; }
-  #browsePager { flex-wrap: wrap; gap: 8px; }
+  .bf select, .bf .dd-trigger { min-width: 0; max-width: none; width: 100%; }
   #updateBanner { flex-wrap: wrap; }
 
   /* ---- touch targets ---- */
   .fav-btn { width: 40px; height: 40px; top: 6px; right: 6px; font-size: 16px; }
   .fav-btn.remove-btn { right: 52px; }
-  .alpha-btn, .page-btn { min-width: 38px; padding: 9px 10px; font-size: 13px; }
+  .alpha-btn { min-width: 38px; padding: 9px 10px; font-size: 13px; }
   .chip { padding: 5px 10px; font-size: 11px; }
   /* detail episodes panel: wrapping header row, full-width find box, tighter tiles */
   .ep-head { flex-wrap: wrap; }
@@ -2493,11 +2904,11 @@ button, select, .back-btn, .pill-btn {
   .ep-btn .ep-num { font-size: 14px; }
   #panelSeasons .slider .card { width: 124px; }
   .side-item { padding: 12px 4px; font-size: 12px; }   /* vertical icon-over-label tiles (820px block) */
-  .pill-btn, #moreBtn { padding: 6px 12px; font-size: 12px; }
+  .pill-btn { padding: 6px 12px; font-size: 12px; }
   .sug-item { padding: 10px 12px; font-size: 14px; }
   .notif-item { padding: 11px 12px; }
   .back-btn { padding: 6px 12px; font-size: 12px; }
-  .setting-row select { font-size: 14px; padding: 9px 10px; }
+  .setting-row select, .setting-row .dd-trigger { font-size: 14px; padding: 9px 10px; }
 
   /* ---- player: chrome rows wrap on narrow screens ---- */
   #playerWrap { touch-action: manipulation; }   /* no double-tap zoom; dblclick still fires */
@@ -2506,7 +2917,8 @@ button, select, .back-btn, .pill-btn {
   #playerBottom { padding: 8px 12px; flex-wrap: wrap; }
   #playerBottom .pill-btn { padding: 6px 12px; }
   #playerRight { gap: 5px; }
-  #qualitySel, #serverSel { padding: 4px 7px; font-size: 11px; }
+  #qualitySel, #serverSel,
+  #playerRight .dd-trigger, #playerTopRow .dd-trigger { padding: 4px 7px; font-size: 11px; }
   #playerRight .pill-btn {
     padding: 5px 10px;
     font-size: 11px;
@@ -2523,13 +2935,14 @@ button, select, .back-btn, .pill-btn {
 }
 
 @media (max-width: 480px) {
-  section { padding: 12px 12px 20px; }
+  section { padding: 8px 12px 20px; }
   h2 { font-size: 15px; }
   .grid { grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 10px; }
   /* browse-all: exactly 3 covers per row on phones */
   #browseGrid { grid-template-columns: repeat(3, 1fr); }
   .grid.small { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
-  .card .card-title { font-size: 12px; }
+  .card .card-title { padding: 26px 8px 6px; }
+  .card .card-title-text { font-size: 12px; }
   #detailHero { margin: -12px -12px 10px; padding: 12px 12px 12px; }
   #detailGrid { gap: 10px; grid-template-columns: 110px 1fr; }
   #detailPoster { width: 110px; }
@@ -2569,7 +2982,7 @@ button, select, .back-btn, .pill-btn {
     width: auto;
   }
   #searchForm button { padding: 9px 12px; }
-  section { padding: 14px 12px; }
+  section { padding: 8px 12px; }
 
   /* search: hide the topbar bar, show the magnifying-glass icon; JS reparents
      the form into the popup panel when the icon is tapped */
@@ -2589,7 +3002,7 @@ button, select, .back-btn, .pill-btn {
     flex-direction: column;
     align-items: stretch;
   }
-  body.filters-open .bf select { max-width: none; width: 100%; }
+  body.filters-open .bf select, body.filters-open .bf .dd-trigger { max-width: none; width: 100%; }
 
   /* alpha bar scrolls sideways instead of stacking tall */
   #alphaBar { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 4px; }
@@ -2599,14 +3012,6 @@ button, select, .back-btn, .pill-btn {
   ::-webkit-scrollbar:vertical { display: none; }
   html { scrollbar-width: none; }
 
-  /* pagination: Prev | pages | Next on one row, "Page x of y" underneath */
-  #browsePager { flex-wrap: wrap; gap: 8px; }
-  #browsePrev { order: 0; }
-  #browsePages { order: 1; flex: 1; }
-  #browseNext { order: 2; }
-  #browsePageLabel { order: 3; flex-basis: 100%; text-align: center; }
-  .page-btn { min-width: 28px; padding: 5px 7px; }
-
   /* detail page: smaller poster, wrapping controls, tighter title */
   #detailHero { margin: -14px -12px 10px; padding: 14px 12px 12px; }
   #detailGrid { gap: 10px; }
@@ -2615,3 +3020,337 @@ button, select, .back-btn, .pill-btn {
   #detailControls { flex-wrap: wrap; gap: 8px; margin-top: 12px; }
   #detailInfo { margin-top: 8px; }
 }
+
+/* ==================== custom player controls (pv) ==================== */
+/* SUB-DUB / server / quality / auto-next pills live in the TOP strip of the
+   player (#pvTop), left-anchored; the gear owns the top-right corner. The
+   row itself is tap-through so taps between the pills fall through to the
+   video gestures. */
+#pvChips {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  pointer-events: none;
+}
+#pvChips > * { pointer-events: auto; }
+#pvChips #playerRight { margin-left: 0; gap: 5px; flex-wrap: wrap; justify-content: flex-start; }
+#pvChips #qualitySel,
+#pvChips #serverSel { padding: 2px 8px; font-size: 10px; background: rgba(20, 24, 33, 0.9); }
+#pvChips #autoNextBtn { font-size: 10px; padding: 3px 9px; background: rgba(20, 24, 33, 0.9); }
+
+/* SUB↔DUB as a slide switch: pill track, solid accent knob carrying the
+   active label, muted label on the free side (player-controls.js mirrors
+   app.js' .active toggles into data-knob for the knob position) */
+#pvChips .segmented {
+  position: relative;
+  flex: none;
+  display: flex;
+  align-items: center;
+  width: 96px;
+  height: 24px;
+  background: rgba(20, 24, 33, 0.9);
+  border: 0;
+  border-radius: 999px;
+  padding: 3px;
+  overflow: hidden;
+}
+#pvChips .segmented::before {   /* the sliding knob */
+  content: '';
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  left: 3px;
+  width: 45px;
+  border-radius: 999px;
+  background: var(--accent);
+  transition: transform 0.18s ease;
+  pointer-events: none;
+}
+#pvChips .segmented[data-knob='dub']::before { transform: translateX(45px); }
+#pvChips .segmented button {
+  position: relative;
+  z-index: 1;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  color: rgba(238, 241, 246, 0.8);
+  padding: 0;
+  font-size: 10px;
+  font-weight: 700;
+  border-radius: 0;
+}
+#pvChips .segmented button.active {
+  background: none;
+  color: #06231f;
+  font-weight: 800;
+}
+/* only one track available: shrink to that label, no knob to slide */
+#pvChips .segmented[data-solo='1'] { width: auto; min-width: 0; padding: 2px 10px; }
+#pvChips .segmented[data-solo='1']::before { display: none; }
+
+/* #pvUi is an overlay inside #videoArea. The video has no native
+   "controls": player-controls.js draws the bar, listens for the video
+   events and auto-hides. body.pv-full = the app-level rotated/HTML
+   fullscreen — the same chrome strip as :fullscreen / body.pip-full,
+   appended AFTER them so equal specificity keeps the later order. */
+#pvUi {
+  position: absolute;
+  inset: 0;
+  z-index: 7;
+  opacity: 0;
+  transition: opacity 0.22s ease;
+  pointer-events: none;
+}
+#pvUi.show {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* --- top overlay row: THE control row of the player (pills + gear at the
+   very top of the video). Title/back join it in rotated fullscreen; the
+   portrait page header #playerTop above the band shows those instead. --- */
+#pvTop {
+  display: flex;
+  flex-wrap: wrap;
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: linear-gradient(to bottom, rgba(0, 0, 0, 0.72), rgba(0, 0, 0, 0.4));
+  color: #eef1f6;
+  z-index: 3;
+}
+body:not(.pv-full) #pvBack,
+body:not(.pv-full) #pvTitleBox { display: none; }
+body.pv-full #pvTitleBox { flex: 1; }
+#pvTitleBox { min-width: 0; flex: 1; }
+#pvTitle {
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#pvEp { font-size: 11px; color: rgba(238, 241, 246, 0.75); }
+#pvBadgeSlot #watchBadge {
+  color: #eef1f6;
+  background: none;
+  margin-right: auto;
+}
+#pvBadgeSlot #watchBadge.low { color: #ff9a6b; }
+#pvGear { margin-left: auto; }   /* top-right corner keeps skip-intro's old spot free */
+/* the top row's buttons run smaller than the bottom bar's (the strip is
+   deliberately compact — tap-through padding falls through anyway) */
+#pvTop .pv-btn { padding: 2px 4px; }
+#pvTop .pv-btn .icon { width: 17px; height: 17px; }
+
+/* --- bottom control bar --- */
+#pvBottom {
+  display: flex;
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  align-items: center;
+  gap: 8px;
+  padding: 26px 14px 10px;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.78), transparent);
+  color: #eef1f6;
+}
+#pvTime, #pvDur {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: rgba(238, 241, 246, 0.85);
+  min-width: 38px;
+  text-align: center;
+  flex: none;
+}
+#pvSpeed {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  flex: none;
+}
+.pv-btn {
+  background: none;
+  border: 0;
+  color: #eef1f6;
+  cursor: pointer;
+  padding: 6px;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font: inherit;
+  line-height: 1;
+  flex: none;
+}
+.pv-btn:hover { background: rgba(255, 255, 255, 0.14); }
+.pv-btn .icon { width: 20px; height: 20px; }
+
+/* --- seek bar --- */
+#pvSeek {
+  position: relative;
+  flex: 1 1 auto;
+  height: 18px;             /* generous finger target around a 4px track */
+  min-width: 60px;
+  cursor: pointer;
+  touch-action: none;
+}
+#pvSeek::before {          /* base track */
+  content: '';
+  position: absolute;
+  left: 0; right: 0; top: 50%;
+  height: 4px;
+  margin-top: -2px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.25);
+}
+#pvBuf {                   /* buffered (light) */
+  position: absolute;
+  left: 0; top: 50%;
+  height: 4px;
+  margin-top: -2px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.35);
+  width: 0;
+  pointer-events: none;
+}
+#pvFill {                  /* played (accent) */
+  position: absolute;
+  left: 0; top: 50%;
+  height: 4px;
+  margin-top: -2px;
+  border-radius: 2px;
+  background: var(--accent);
+  width: 0;
+  pointer-events: none;
+}
+#pvHead {                  /* scrub head */
+  position: absolute;
+  top: 50%;
+  width: 12px;
+  height: 12px;
+  margin-left: -6px;
+  margin-top: -6px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 4px rgba(0, 0, 0, 0.6);
+  pointer-events: none;
+}
+
+/* --- settings sheet --- */
+/* opens top-right, UNDER the top strip's pill row and clearly above it —
+   the gear that toggles it sits at the top-right corner. NO height cap: the
+   full settings list shows at once (it may spill past the band's bottom
+   edge on small phones — tapping the video closes it). */
+#pvSheet {
+  position: absolute;
+  right: 10px;
+  top: 52px;
+  bottom: auto;
+  width: min(330px, 88%);
+  background: rgba(10, 13, 18, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 14px;
+  padding: 6px 14px 12px;
+  color: #eef1f6;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.55);
+  z-index: 6;
+}
+.pv-row { padding: 8px 0 4px; border-bottom: 1px solid rgba(255, 255, 255, 0.06); }
+.pv-row:last-child { border-bottom: 0; }
+.pv-row-label { font-size: 11px; color: rgba(238, 241, 246, 0.6); margin-bottom: 6px; }
+.pv-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.pv-chip {
+  background: rgba(255, 255, 255, 0.08);
+  border: 0;
+  border-radius: 999px;
+  color: #eef1f6;
+  font-size: 12px;
+  padding: 6px 12px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+}
+.pv-chip:hover { background: rgba(255, 255, 255, 0.16); }
+.pv-chip.on {
+  background: var(--accent);
+  color: #06231f;
+  font-weight: 600;
+}
+
+/* --- centre overlay: buffering spinner + big play/pause pulse. Sits under
+   #pvUi in stacking order (appears before it in #videoArea) and never
+   intercepts touches — the centre tap gesture plays/pauses. --- */
+.pv-center {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+#pvSpin { display: none; }
+#pvSpin.on { display: flex; }
+#pvSpin .spinner { margin: 0; width: 44px; height: 44px; }
+#pvPulse {
+  position: absolute;
+  width: 68px;
+  height: 68px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent);       /* theme accent, not flat white */
+  opacity: 0;
+  transition: opacity 0.22s ease;
+  filter: drop-shadow(0 2px 10px rgba(0, 0, 0, 0.65));
+}
+#pvSpin.on ~ #pvPulse { opacity: 0 !important; } /* buffering gets the stage */
+
+/* --- gesture / progress HUD --- */
+#pvHint {
+  position: absolute;
+  left: 50%;
+  top: 46%;
+  transform: translate(-50%, -50%);
+  background: rgba(6, 8, 12, 0.78);
+  color: #eef1f6;
+  font-size: 15px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  padding: 10px 16px;
+  border-radius: 999px;
+  pointer-events: none;
+  z-index: 2;
+}
+
+/* --- rotated/HTML fullscreen: same strip as :fullscreen + pip-full ---
+   Appended after those rules and with equal specificity, so it wins by
+   order. #pvTop appears here (title + back + budget badge live in it). */
+body.pv-full #topbar,
+body.pv-full #playerTop,
+body.pv-full #playerBottom,
+body.pv-full #playerDetailSlot { display: none !important; }
+body.pv-full #playerView,
+body.pv-full #playerWrap { height: 100% !important; }
+body.pv-full #videoArea {
+  flex: 1 1 auto !important;
+  aspect-ratio: auto !important;
+  max-height: none !important;
+  touch-action: none;
+}
+body.pv-full #playerView.in-player { height: 100%; }
+/* skip-intro floats above the control bar */
+body.pv-full .overlay-btn { bottom: calc(12% + 58px); }
+
+/* the PiP mirror must show video ONLY — never our control bar */
+body.pip-full #pvUi { display: none !important; }
+
+/* player page: swipes must not scroll the page beneath the video band */
+#playerView.in-player #videoArea { touch-action: none; }

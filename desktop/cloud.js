@@ -25,7 +25,11 @@ const TABLE = 'user_data';
 const CALLBACK_PATH = '/auth/callback';
 const AUTH_FILE = 'anibrowser-auth.json'; // tokens live here, NOT in the exportable data file
 const PENDING_TTL = 10 * 60 * 1000;       // sign-in attempt expires
-const PUSH_DEBOUNCE = 3000;               // coalesce the 5s progress saves + 1.5s UI debounce
+const TIMING = {
+  pushDebounce: 3000,         // coalesce the 5s progress saves + 1.5s UI debounce
+  progressMin: 3 * 60e3,      // progress saves at 5s while playing; cloud travels at most 1/per
+  pullMaxAge: 10 * 60e3,      // pushes merge against a cached row; refetch when this stale
+};
 const BACKOFFS = [60e3, 5 * 60e3, 30 * 60 * 1000]; // network failure backoff ladder
 const TOMBSTONE_TTL = 30 * 24 * 3600 * 1000; // deletes forget after 30 days
 // Admin account — the developer. The shell serves this account Google's
@@ -46,7 +50,13 @@ let exchanging = false;  // a code exchange is running in the background
 let pushTimer = null;
 let retryTimer = null;
 let syncing = false;
-let pullAgain = false;   // a sync was requested while one ran
+let again = null;        // 'full' | 'push' — a sync arrived while one ran; rerun with this mode
+let cloudRow = null;     // last seen cloud row — the merge base pushes work from
+let cloudRowAt = 0;      // Date.now() when cloudRow was (partially) refetched
+let pulled = false;      // the once-per-visit boot pull has happened
+let lastPushed = null;   // { prefs, favorites, progress } — what the last POST actually sent
+let lastProgressPush = 0; // paces the progress column (saves arrive every 5s while playing)
+let pendingDirty = new Set(); // collections confirmed changed locally, not yet pushed
 let lastSync = null;     // Date.now() of last successful round trip
 let lastError = null;
 let backoffStep = 0;
@@ -232,6 +242,14 @@ async function dropSession() {
   clearTimeout(pushTimer);
   clearTimeout(retryTimer);
   pushTimer = retryTimer = null;
+  // anything cached for the old account is poison for the next one
+  pulled = false;
+  again = null;
+  cloudRow = null;
+  cloudRowAt = 0;
+  lastPushed = null;
+  lastProgressPush = 0;
+  pendingDirty.clear();
   try { await fsp.unlink(authFile()); } catch { /* already gone */ }
   // drop the offline photo cache with the account it belongs to
   try { await fsp.unlink(avatarFile()); } catch { /* already gone */ }
@@ -299,6 +317,21 @@ async function getAccessToken() {
   return ok ? session.access_token : null;
 }
 
+// Email me when a brand-new Google account signs up. A returning sign-in has
+// an old created_at; GoTrue doesn't flag "new" itself, so freshness is the
+// signal (a few minutes of slack for clock skew / a slow first grant).
+function mailIfNewSignup(gUser) {
+  try {
+    const created = gUser?.created_at ? new Date(gUser.created_at).getTime() : 0;
+    if (!created || Date.now() - created > 10 * 60 * 1000) return;
+    require('./mailer').signupNotice({
+      id: gUser.id || null,
+      email: gUser.email || null,
+      name: gUser.user_metadata?.name || null,
+    });
+  } catch {}
+}
+
 // Exchange the OAuth code from the loopback callback for a session.
 async function exchangeCode(code, state) {
   if (!configured) return { ok: false, error: 'Supabase is not configured' };
@@ -334,6 +367,7 @@ async function exchangeCode(code, state) {
   lastError = null;
   backoffStep = 0;
   syncNow(); // first pull+push with the new account
+  mailIfNewSignup(r.json?.user); // fire-and-forget — email me on brand-new accounts
   return { ok: true, email: session.user.email, name: session.user.name };
 }
 
@@ -342,7 +376,7 @@ async function exchangeCode(code, state) {
 // exchanges it via Supabase's id_token grant. The audience of that token must
 // equal the Google client ID configured in the Supabase dashboard — which is
 // also the GOOGLE_WEB_CLIENT_ID constant hardcoded in the Expo module
-// (expo-app/modules/anibrowser-node/.../AniBrowserNodeModule.kt).
+// (AniBrowserNodeModule.kt) in the separate mobile repo (AniNinja-Mobile).
 async function signInWithIdToken(idToken) {
   if (!configured) return { ok: false, error: 'Supabase is not configured in cloud.js' };
   // no nonce — GoTrue enforces both-or-neither (nonce param AND nonce claim, or
@@ -384,6 +418,7 @@ async function signInWithIdToken(idToken) {
   lastError = null;
   backoffStep = 0;
   syncNow(); // first pull+push with the new account
+  mailIfNewSignup(r.json?.user); // fire-and-forget — email me on brand-new accounts
   return { ok: true, email: session.user.email, name: session.user.name };
 }
 
@@ -426,22 +461,61 @@ function pruneTombstones(t) {
   return out;
 }
 
-// ---- sync engine -----------------------------------------------------------
+// stable serialization compare — treats {a:1} and {a:1} as equal
+function sameJson(a, b) {
+  return JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+}
 
-async function supaGet(uid) {
+// ---- sync engine -----------------------------------------------------------
+// Egress model: the whole row pulls ONCE per app visit (boot, sign-in, the
+// Sync now button). Every later change-driven push (a) reads at most the
+// columns the dirty collections need and (b) POSTs only those columns —
+// PostgREST's upsert leaves unlisted columns untouched, so a progress-only
+// push never carries favorites. A no-op push carries nothing at all.
+
+// which cloud columns each merge input belongs to
+const COLLECTION_COLUMNS = {
+  prefs: ['prefs', 'prefs_ts'],
+  favorites: ['favorites', 'fav_tombstones'],
+  progress: ['progress', 'prog_tombstones'],
+};
+
+async function supaGet(uid, columns) {
   const token = await getAccessToken();
   if (!token) throw new Error(lastError || 'not signed in');
-  const r = await reqJson('GET', `${apiBase()}/rest/v1/${TABLE}?select=*&user_id=eq.${uid}`, {
+  const select = columns ? columns.join(',') : '*';
+  const r = await reqJson('GET', `${apiBase()}/rest/v1/${TABLE}?select=${encodeURI(select)}&user_id=eq.${uid}`, {
     headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${token}` },
   });
   if (r.status >= 400) throw new Error(`supabase pull ${r.status}`);
   return Array.isArray(r.json) ? r.json[0] : null;
 }
 
-// pull cloud row → merge into local → write through the existing queue
-async function pullAndMerge() {
+// fetch only the collections a push needs, merged into the cached row
+async function fetchCollections(dirty) {
+  const cols = [];
+  for (const c of dirty) {
+    for (const col of COLLECTION_COLUMNS[c] || []) {
+      if (!cols.includes(col)) cols.push(col);
+    }
+  }
+  const row = await supaGet(session.user.id, cols);
+  cloudRow = { ...(cloudRow || {}), ...(row || {}) };
+  cloudRowAt = Date.now();
+}
+
+// pull cloud row → merge into local → write through the existing queue.
+// Once-per-visit entry point; the returned values ride into push via the file.
+async function fullPull() {
   const local = (await hooks.readBackup()) || { prefs: {}, favorites: {}, progress: {} };
-  const row = await supaGet(session.user.id);
+  const row = await supaGet(session.user.id); // the whole row
+  cloudRow = row || {};
+  cloudRowAt = Date.now();
+  // lastPushed = what the CLOUD now provably holds (NOT the merge result —
+  // the merge also carries local-only entries the cloud doesn't yet have)
+  lastPushed = row
+    ? { prefs: row.prefs || {}, favorites: row.favorites || {}, progress: row.progress || {} }
+    : null;
   if (!row) return local; // nothing in the cloud yet — local is the seed state
 
   const fav = mergeDicts(local.favorites || {}, row.favorites || {},
@@ -461,17 +535,51 @@ async function pullAndMerge() {
   return { ...local, favorites: fav.dict, progress: prog.dict };
 }
 
-// push = read-merge-write against the cloud row so a second device's newer
-// keys survive (the residual concurrent-writer race is accepted, personal use)
-async function push() {
+// change-driven push: merges the local file against the cached cloud row so a
+// second device's newer keys survive, then upserts ONLY the dirty collections.
+// The residual concurrent-writer race is accepted (personal use) — the stale
+// cache is at most TIMING.pullMaxAge old, and a merge refetch covers the rest.
+async function push(dirtySet) {
+  if (!dirtySet || !dirtySet.size) return; // nothing changed — zero egress
   const local = (await hooks.readBackup()) || { prefs: {}, favorites: {}, progress: {} };
-  const row = await supaGet(session.user.id);
 
-  const fav = mergeDicts(local.favorites || {}, row?.favorites || {},
-    (local.tombstones || {}).favorites || {}, row?.fav_tombstones || {});
-  const prog = mergeDicts(local.progress || {}, row?.progress || {},
-    (local.tombstones || {}).progress || {}, row?.prog_tombstones || {});
-  const prefsM = mergePrefs(local.prefs || {}, local.prefsTs || 0, row?.prefs || {}, row?.prefs_ts || 0);
+  // merge-safety cap: a cache older than TIMING.pullMaxAge gets the needed columns
+  // refetched so pushes made hours into a session still see the other device
+  if (!pulled || Date.now() - cloudRowAt > TIMING.pullMaxAge) {
+    await fetchCollections(dirtySet);
+  }
+  const row = cloudRow || null;
+
+  // only each dirty collection merges; the rest isn't even read
+  const prefsM = dirtySet.has('prefs')
+    ? mergePrefs(local.prefs || {}, local.prefsTs || 0, row?.prefs || {}, row?.prefs_ts || 0)
+    : null;
+  const fav = dirtySet.has('favorites')
+    ? mergeDicts(local.favorites || {}, row?.favorites || {},
+      (local.tombstones || {}).favorites || {}, row?.fav_tombstones || {})
+    : null;
+  const prog = dirtySet.has('progress')
+    ? mergeDicts(local.progress || {}, row?.progress || {},
+      (local.tombstones || {}).progress || {}, row?.prog_tombstones || {})
+    : null;
+
+  // build up the minimal body — skip any collection whose merged value is
+  // byte-identical to what we already sent (e.g. a pull merge that touched
+  // only the local file)
+  const body = { user_id: session.user.id };
+  if (prefsM && !sameJson(lastPushed?.prefs, prefsM.prefs)) {
+    body.prefs = prefsM.prefs;
+    body.prefs_ts = prefsM.ts;
+  }
+  if (fav && !sameJson(lastPushed?.favorites, fav.dict)) {
+    body.favorites = fav.dict;
+    body.fav_tombstones = pruneTombstones({ ...(row?.fav_tombstones || {}), ...((local.tombstones || {}).favorites || {}) });
+  }
+  if (prog && !sameJson(lastPushed?.progress, prog.dict)) {
+    body.progress = prog.dict;
+    body.prog_tombstones = pruneTombstones({ ...(row?.prog_tombstones || {}), ...((local.tombstones || {}).progress || {}) });
+  }
+  if (Object.keys(body).length === 1) return; // only user_id — nothing to send
 
   const token = await getAccessToken();
   if (!token) throw new Error(lastError || 'not signed in');
@@ -481,18 +589,19 @@ async function push() {
       Authorization: `Bearer ${token}`,
       Prefer: 'resolution=merge-duplicates,return=minimal',
     },
-    body: {
-      user_id: session.user.id,
-      prefs: prefsM.prefs,
-      prefs_ts: prefsM.ts,
-      favorites: fav.dict,
-      progress: prog.dict,
-      fav_tombstones: pruneTombstones({ ...(row?.fav_tombstones || {}), ...((local.tombstones || {}).favorites || {}) }),
-      prog_tombstones: pruneTombstones({ ...(row?.prog_tombstones || {}), ...((local.tombstones || {}).progress || {}) }),
-      updated_at: new Date().toISOString(),
-    },
+    body,
   });
   if (up.status >= 400) throw new Error(`supabase push ${up.status}`);
+  // one line per real POST — lets a logcat/session watcher see the pacing
+  console.log(`[cloud] pushed ${Object.keys(body).filter((k) => k !== 'user_id').join('+')}`);
+
+  // freeze what traveled, so idle re-writes of the same state skip the POST
+  lastPushed = {
+    prefs: body.prefs !== undefined ? body.prefs : lastPushed?.prefs,
+    favorites: body.favorites !== undefined ? body.favorites : lastPushed?.favorites,
+    progress: body.progress !== undefined ? body.progress : lastPushed?.progress,
+  };
+  if (body.progress !== undefined) lastProgressPush = Date.now();
 }
 
 // ---- feedback board ---------------------------------------------------------
@@ -575,43 +684,79 @@ function friendlyError(e) {
   return e;
 }
 
-// One serialized sync step: pull-merge locally, then push the merged state.
-// Backoff ladder on failure; any success resets it.
+// Backoff ladder on failure; any success resets it. Retries don't re-pull —
+// the boot pull already happened, and pushes refetch their columns when stale.
 function scheduleRetry() {
   clearTimeout(retryTimer);
   const delay = BACKOFFS[Math.min(backoffStep, BACKOFFS.length - 1)] + Math.random() * 5000;
   backoffStep += 1;
-  retryTimer = setTimeout(() => { retryTimer = null; syncNow(); }, delay);
+  retryTimer = setTimeout(() => { retryTimer = null; syncNow('push'); }, delay);
 }
 
-async function syncNow() {
+// One serialized sync step. mode 'full' = once-per-visit: pull the whole row,
+// merge, then push everything the session is owed. mode 'push' = a change
+// event: dirty columns only, no pull unless the cached row is TIMING.pullMaxAge old.
+async function syncNow(mode = 'full') {
   if (!configured || !session) return;
-  if (syncing) { pullAgain = true; return; }
+  if (syncing) {
+    if (!again || mode === 'full') again = mode; // 'full' upgrades a queued 'push'
+    return;
+  }
   syncing = true;
+  let ok = false;
   try {
-    await pullAndMerge();
-    await push();
+    if (mode === 'full' || !pulled) {
+      await fullPull();
+      pulled = true;
+    }
+    // push a snapshot; anything onLocalDataChanged adds mid-push stays queued
+    // (its event schedules its own follow-up push)
+    const due = new Set(pendingDirty);
+    pendingDirty.clear();
+    await push(due);
     lastSync = Date.now();
     lastError = null;
     backoffStep = 0;
     dataRev += 1;
+    ok = true;
   } catch (e) {
     lastError = e.message;
     scheduleRetry();
   } finally {
     syncing = false;
   }
-  if (pullAgain) { pullAgain = false; syncNow(); }
+  if (ok && again && pulled) {
+    const next = again;
+    again = null;
+    syncNow(next);
+  }
 }
 
-// Called by server.js after every local backup write. Debounced: the 5s
-// progress timer + 1.5s UI debounce funnel into at most one push per 3s.
-function onLocalDataChanged() {
+// Called by server.js after every local backup write, with the collections
+// whose JSON actually changed ([] for churn that didn't touch syncable data).
+// Debounced: the 5s progress saves + 1.5s UI debounce funnel into one push;
+// when progress is the ONLY thing dirty, it additionally waits out its min
+// interval — a playing stream lands one slim progress push every 3 minutes,
+// not a full-row round trip every few seconds.
+function onLocalDataChanged(changedIn) {
   if (!configured || !session) return;
+  // empty array = the write happened but no syncable JSON changed — nothing
+  // to do; undefined = no diff info from an old caller — stay safe and
+  // assume everything changed
+  const changed = Array.isArray(changedIn) ? changedIn : ['prefs', 'favorites', 'progress'];
+  if (Array.isArray(changedIn) && !changedIn.length) return;
+  let touched = false;
+  for (const c of changed) {
+    if (COLLECTION_COLUMNS[c]) { pendingDirty.add(c); touched = true; }
+  }
+  if (!touched) return; // tombstone/whitespace churn — nothing syncable changed
   clearTimeout(pushTimer);
   clearTimeout(retryTimer); // a state change overrides any backoff wait
   retryTimer = null;
-  pushTimer = setTimeout(() => { pushTimer = null; syncNow(); }, PUSH_DEBOUNCE);
+  const wantProgress = pendingDirty.size === 1 && pendingDirty.has('progress');
+  const due = wantProgress ? lastProgressPush + TIMING.progressMin : 0;
+  const wait = Math.max(TIMING.pushDebounce, due - Date.now());
+  pushTimer = setTimeout(() => { pushTimer = null; syncNow('push'); }, wait);
 }
 
 // The signed-in Supabase auth uid (used to attribute votes), or null.
@@ -795,4 +940,5 @@ module.exports = {
   AUTH_PORT,
   // exposed for tests
   _merge: { mergeDicts, mergePrefs, pruneTombstones },
+  _timing: TIMING,
 };

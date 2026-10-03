@@ -38,6 +38,7 @@ const state = {
   recentLoaded: false,
   detailTab: 'episodes', // active detail tab; reset by openDetail
   audioCounts: null,     // { sub, dub } source counts from /api/detail
+  epAuds: null,          // per-episode audio truth { num: { sub, dub } } (small shows)
   relCountsLoaded: false, // SEASONS "N EPS" badges fetched once per visit
   epFilter: '',          // FIND EP input value
 };
@@ -49,6 +50,14 @@ const TOMBSTONES_KEY = 'anibrowser_tombstones';
 const PREFS_TS_KEY = 'anibrowser_prefs_ts';
 const GUEST_KEY = 'anibrowser_guest';
 const WN_KEY = 'anibrowser_last_whatsnew'; // version last welcomed — device-local
+// last boot's sign-in knowledge ("0" = a session was live / gate must never be
+// first-painted, "1" = signed out). Read synchronously in the boot IIFE so the
+// login gate can paint over the homepage instead of blinking open one poll
+// later. Only read once — everything after defers to the live auth poll.
+const GATE_SEEN_SIGNED_IN = 'anibrowser_gate_seen_signed_in';
+// last known-good /api/auth/status payload, persisted so an offline cold start
+// still shows the signed-in user on the profile page instead of "Not signed in"
+const LAST_SYNC_KEY = 'anibrowser_lastSyncStatus';
 
 // guest mode: session-only flag. Deliberately a standalone key, NOT a prefs
 // entry — prefs are pushed whole-blob to the cloud and mirrored into the
@@ -95,6 +104,19 @@ function prefs() {
   try { return JSON.parse(localStorage.getItem(PREFS_KEY) || '{}'); }
   catch { return {}; }
 }
+// dark is the default; light swaps the :root neutral tokens (style.css).
+// The Android shell's cover/backdrop stays dark-painted natively — it is told
+// via a 'theme' message so the boot gap doesn't flash dark during light mode.
+function currentTheme() {
+  return prefs().theme === 'light' ? 'light' : 'dark';
+}
+function applyTheme(t) {
+  const theme = t || currentTheme();
+  document.documentElement.dataset.theme = theme;
+  if (IS_ANDROID && window.ReactNativeWebView) {
+    window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'theme', light: theme === 'light' }));
+  }
+}
 // profile-page overrides (username / avatar / bg color / hide-email). They live
 // inside prefs so they ride the normal prefs sync — the avatar is a resized
 // data-URL, small enough for the synced blob. Empty object = untouched identity.
@@ -112,26 +134,35 @@ function setPrefs(p) {
 function prefAudioType() {
   return prefs().defaultType || prefs().lastType || 'sub';
 }
-// 18+ shows carry an r18 flag from the source's card markup; the settings
-// toggle (default: hide) filters them out of Home, Search and Browse.
+// the stream server new playback should resolve with: a pref picked in
+// settings or by a server switch in the player ('Vidstream-2' out of the
+// box — '' means Auto / first-available). An explicit undefined check
+// matters: '' is falsy, but it's a real user choice (Auto)
+function prefServer() {
+  const v = prefs().defaultServer;
+  return v === undefined ? 'Vidstream-2' : v;
+}
+// adult content: the app is family-safe by design — R+ / Rx titles and the
+// source's adult catalog (r18 flag) are always hidden, so there is no toggle
+// and no filter option for them anywhere. Regular R stays visible (the app's
+// "R" is the source's R-17+ maturity rating — violence/profanity, not nudity).
 // The source tick-marks ONLY its adult-catalog titles though — shows merely
-// rated R / R+ / Rx look like regular cards. Their rating lives on the detail
-// page, so the Hide filter also consults ratings learned by sweepAdultRatings.
-const ADULT_RATINGS = ['R', 'R+', 'Rx'];
+// rated R+ / Rx look like regular cards. Their rating lives on the detail
+// page, so the filter also consults ratings learned by sweepAdultRatings.
+const ADULT_RATINGS = ['R+', 'Rx'];
 const adultRatings = {};          // slug -> pgRating ('R', 'R+', 'Rx', 'PG-13'…)
 const pendingRatings = new Set(); // slugs with a sweep request in flight
 function r18Visible(r) {
-  if (prefs().showR18) return true;
   if (r.r18) return false;
   return !ADULT_RATINGS.includes(adultRatings[r.slug]);
 }
 
 // post-render sweep: fetch content ratings for every card in `container` the
-// UI doesn't know yet, then hide the ones that turn out R / R+ / Rx in place
+// UI doesn't know yet, then hide the ones that turn out R+ / Rx in place
 // (no re-render — the grid keeps its layout). Ratings come from the detail
 // pages, server-cached for a week, so repeats are instant.
 async function sweepAdultRatings(container) {
-  if (prefs().showR18 || !container) return;
+  if (!container) return;
   const slugs = [...new Set(
     [...container.querySelectorAll('[data-slug]')]
       .map((c) => c.dataset.slug)
@@ -315,11 +346,16 @@ function renderWatching() {
   grid.innerHTML = '';
   for (const it of items) {
     const card = el('div', 'card');
+    const media = el('div', 'card-media');
     const img = el('img');
-    if (it.poster) img.src = it.poster;
+    loadPoster(img, it.poster);
     img.loading = 'lazy';
-    card.appendChild(img);
-    card.appendChild(el('div', 'card-title', it.title));
+    media.appendChild(img);
+    card.dataset.slug = it.slug;
+    const title = el('div', 'card-title'); // gradient veil + clamped text below
+    title.appendChild(el('div', 'card-title-text', it.title));
+    media.appendChild(title);
+    card.appendChild(media);
     card.title = it.title;
     const bar = el('div', 'resume-bar');
     const fill = el('div');
@@ -401,9 +437,46 @@ async function baselineFavCount(slug) {
   } catch { /* the periodic poll will baseline it instead */ }
 }
 
+// NEW-RELEASE HIGHLIGHTING FOR NON-FAVORITES. The bell panel only tracks
+// shows you favorited (its poll knows a release happened even while the app
+// runs long-term). For a show that merely got *opened*, remember the episode
+// count it had at your last visit; a later visit with a bigger count means
+// episodes released in between — those highlight on the episode grid.
+// epVisits = { slug: { count, ts, fresh: {lo, hi} | null } }
+function trackVisits(slug, count) {
+  state.visitNew = null;
+  if (getFavs()[slug]) return; // favorited: the bell panel's tracking owns it
+  try {
+    const p = prefs();
+    const visits = p.epVisits || {};
+    const prev = visits[slug];
+    const now = Date.now();
+    if (prev && typeof prev.count === 'number') {
+      if (now - prev.ts < 10 * 60 * 1000) {
+        // Back-nav round trips (player → detail → player) re-open the same
+        // page minutes apart — keep the fresh range alive so tiles don't
+        // dim the moment the visit is re-recorded
+        state.visitNew = prev.fresh || null;
+      } else if (count > prev.count) {
+        state.visitNew = { lo: prev.count + 1, hi: count };
+      }
+    } // first-ever visit: no baseline yet — record it, nothing to highlight
+    visits[slug] = { count, ts: now, fresh: state.visitNew };
+    // prune stale entries once the map grows big
+    const keys = Object.keys(visits);
+    if (keys.length > 300) {
+      const cutoff = now - 90 * 24 * 60 * 60 * 1000;
+      for (const k of keys) if (visits[k].ts < cutoff) delete visits[k];
+    }
+    p.epVisits = visits;
+    setPrefs(p);
+  } catch { /* tracking is best-effort; the visit just isn't remembered */ }
+}
+
 // drop notification state when a show is un-favorited
 function forgetFavTracking(slug) {
   const p = prefs();
+  if (p.epVisits) { const v = { ...p.epVisits }; delete v[slug]; p.epVisits = v; }
   if (p.favEpSeen) { const s = { ...p.favEpSeen }; delete s[slug]; p.favEpSeen = s; }
   if ((p.notifActive || []).some((n) => n.slug === slug)) {
     p.notifActive = p.notifActive.filter((n) => n.slug !== slug);
@@ -456,6 +529,17 @@ async function checkFavEpisodes() {
     }
   } catch { /* poll is best-effort; the next tick retries */ }
   finally { checkingFavs = false; }
+}
+
+// NEW badge poster pill: teal dot-corner marker for "new episode released"
+const newBadgeEl = () => el('span', 'new-badge', 'NEW');
+
+// slugs currently sitting on the recently-updated feed. The home grid uses
+// this to paint NEW pills; the detail page reuses the same set to animate a
+// show's newest tile even for shows never opened or favorited.
+const recentSet = new Set();
+function rememberRecent(results) {
+  for (const r of results) if (r && r.slug) recentSet.add(r.slug);
 }
 
 function renderNotifPanel() {
@@ -515,8 +599,12 @@ async function api(path, body) {
 let toastTimer = null;
 function toast(msg, isErr = false) {
   const t = $('toast');
-  t.textContent = msg;
   t.className = isErr ? 'err' : '';
+  t.replaceChildren();
+  const span = document.createElement('span');
+  span.textContent = msg;
+  t.innerHTML = `<svg class="icon"><use href="${isErr ? '#i-info' : '#i-check'}"></use></svg>`;
+  t.appendChild(span);
   t.hidden = false;
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => { t.hidden = true; }, 4000);
@@ -527,12 +615,15 @@ function toast(msg, isErr = false) {
    with the theme; this resolves a promise instead, so call sites stay
    `if (!await confirmDialog(...)) return`. */
 let dlgResolve = null;
-function confirmDialog(msg, { title = 'Please confirm', okText = 'Confirm', cancelText = 'Cancel' } = {}) {
+function confirmDialog(msg, { title = 'Please confirm', okText = 'Confirm', cancelText = 'Cancel', icon = 'i-info', danger = false } = {}) {
   if (dlgResolve) dlgResolve(false); // a superseding dialog cancels the open one
   $('dlgTitle').textContent = title;
   $('dlgMsg').textContent = msg;
   $('dlgOk').textContent = okText;
   $('dlgCancel').textContent = cancelText;
+  $('dlgIconUse').setAttribute('href', '#' + icon);
+  $('dlgIcon').classList.toggle('danger', danger);
+  $('dlgOk').classList.toggle('danger', danger);
   $('confirmDlg').hidden = false;
   $('dlgCancel').focus(); // safe default; also routes Escape to the dialog's key handler
   return new Promise((res) => { dlgResolve = res; });
@@ -550,10 +641,23 @@ $('confirmDlg').addEventListener('click', (e) => { if (e.target === $('confirmDl
 $('confirmDlg').addEventListener('keydown', (e) => { if (e.key === 'Escape') closeConfirm(false); });
 
 function showView(name) {
+  // offline lockdown: only the profile (plus settings, and a show's detail
+  // page opened from its profile card) renders without the network — every
+  // other page is server-backed and would just spin. Navigation to them
+  // folds back to the profile instead.
+  if (appOffline && !OFFLINE_OK_VIEWS.has(name)) {
+    offlineNotice();
+    name = 'profileView';
+    renderProfile();
+  }
+  // remember where the reader is in the accumulating listings — an infinite
+  // list has no page numbers to jump back to
+  if (state.view) scrollMem[state.view] = $('main').scrollTop;
   for (const v of ['homeView', 'browseView', 'scheduleView', 'detailView', 'playerView', 'collectionView', 'profileView', 'settingsView', 'feedbackView']) {
     $(v).hidden = v !== name;
   }
   state.view = name;
+  document.dispatchEvent(new CustomEvent('pv:view', { detail: { view: name } }));
   // coming back home after a playback session: refresh the hero buttons so a
   // show just watched flips from "Watch now" to "Continue EP n"
   if (name === 'homeView' && heroItems.length) renderHero(heroIdx);
@@ -579,7 +683,11 @@ function showView(name) {
   // entry, restore it to the detail page on every exit path
   if (name === 'playerView') ensureDetailMounted();
   else restorePlayerDetail();
-  $('main').scrollTop = 0;
+  // only the paged listings keep their place; everything else still opens at
+  // the top (a stale memory would scroll a fresh list somewhere random)
+  $('main').scrollTop = name === 'browseView' || name === 'collectionView'
+    ? (scrollMem[name] || 0) : 0;
+  infCheck(); // a restored scroll may already sit in the next-page trigger zone
 }
 
 /* ---- navigation history (the back trail) ----
@@ -611,6 +719,7 @@ window.addEventListener('popstate', () => restoreHist());
 
 // re-show a view-level snapshot without re-pushing history
 function restoreView(v) {
+  if (appOffline) return showView(OFFLINE_OK_VIEWS.has(v) ? v : 'profileView');
   if (v === 'browseView') showView('browseView');
   else if (v === 'scheduleView') { showView('scheduleView'); loadSchedule(); }
   else if (v === 'profileView') { renderProfile(); showView('profileView'); }
@@ -664,7 +773,7 @@ function renderSuggestions(items) {
   for (const r of items) {
     const row = el('div', 'sug-item');
     const img = el('img');
-    if (r.poster) img.src = r.poster;
+    loadPoster(img, r.poster);
     row.appendChild(img);
     row.appendChild(el('div', 'sug-title', r.title));
     row.addEventListener('mousedown', (e) => {
@@ -747,36 +856,117 @@ if (IS_MOBILE) {
 
 /* ---------------- browse all ---------------- */
 
-// clickable page list with ellipsis, e.g. 1 … 4 5 [6] 7 8 … 340
-// (phones get a ±1 window so the row always fits without wrapping)
-function pageList(page, total) {
-  const span = IS_MOBILE ? 1 : 2;
-  const win = [];
-  for (let p = Math.max(1, page - span); p <= Math.min(total, page + span); p++) win.push(p);
-  const set = [...new Set([1, ...win, total])].sort((a, b) => a - b);
-  const out = [];
-  let prev = 0;
-  for (const p of set) {
-    if (p - prev > 1) out.push('…');
-    out.push(p);
-    prev = p;
+/* ---- infinite scroll ----
+   Numbered pagination is gone: every big listing now appends the next page as
+   the reader nears the bottom of the current one. One engine drives all of
+   them — browse, collections, search results — each with a footer that shows
+   the spinner while a page is in flight and "That's everything" once the
+   server runs out. Scrolling to a detail page and back restores the scroll
+   position: with no page numbers left to jump to, losing your place would
+   mean scrolling through dozens of pages to find it again. */
+const INFINITE_MARGIN = 700; // begin a fetch this many px ahead of the bottom
+const mainEl = $('main');
+const scrollMem = {}; // view → scrollTop, restored only for the listings that accumulate
+const infLoaders = new Set();
+
+class InfList {
+  constructor({ footer, grid, view, fetchPage, emptyMsg, endMsg, onReset }) {
+    this.footer = footer;
+    this.grid = grid;
+    this.view = view; // fetches only while this view is on screen
+    this.fetchPage = fetchPage; // async (page) → { results, totalPages?, page? }
+    this.emptyMsg = emptyMsg;
+    this.onReset = onReset; // run at the top of every fresh listing (section flips etc.)
+    this.busy = false;
+    this.done = false;
+    this.page = 1;
+    this.totalPages = 1;
+    this.seq = 0;
+    footer.querySelector('.inf-end').textContent = endMsg || 'That’s everything';
   }
-  return out;
+
+  // position check, run every scroll tick
+  maybeFetch() {
+    if (this.busy || this.done || state.view !== this.view) return;
+    // page 1 must land before appends start — showView's infCheck fires
+    // against an empty grid before its reset begins, and appending page 2
+    // onto zero cards would chain eagerly (pages of cards with no user scroll)
+    if (!this.grid.querySelector('.card')) return;
+    const r = this.footer.getBoundingClientRect();
+    if (!r.height) return; // footer not in layout — nothing to watch
+    if (r.top > mainEl.getBoundingClientRect().bottom + INFINITE_MARGIN) return;
+    this.loadPage(false);
+  }
+
+  // fresh listing: page 1, skeleton up, any scroll memory discarded
+  reset() {
+    this.page = 1;
+    this.totalPages = 1;
+    this.done = false;
+    this.busy = false;
+    this.seq++;
+    if (this.view) scrollMem[this.view] = 0;
+    this.loadPage(true);
+  }
+
+  async loadPage(reset) {
+    this.busy = true;
+    this.footer.hidden = false;
+    this.footer.classList.add('busy');
+    this.footer.classList.remove('end');
+    if (reset && this.onReset) this.onReset();
+    if (reset) renderSkeletonCards(this.grid, 12);
+    const seq = this.seq;
+    try {
+      // a family-safe listing can have pages that are entirely R+ / Rx — those
+      // append nothing, so they must not read as the end: skip ahead (bounded)
+      // until real cards land or the server actually runs out
+      let appended = 0;
+      for (let hops = 0; ; hops++) {
+        const p = reset ? 1 : this.page + 1;
+        const { results, totalPages = Infinity, page = p } = await this.fetchPage(p);
+        if (seq !== this.seq) return; // superseded mid-flight (new filters etc.)
+        this.page = page;
+        this.totalPages = totalPages;
+        if (reset) this.grid.innerHTML = ''; // drop the skeleton placeholders
+        const shown = results.filter(r18Visible);
+        for (const r of shown) this.grid.appendChild(makeCard(r));
+        sweepAdultRatings(this.grid);
+        appended += shown.length;
+        // search has no page count; an empty page IS the end there
+        const last = results.length === 0 || page >= totalPages;
+        this.done = last;
+        if (shown.length || last || hops >= 4) break;
+      }
+      if (reset && !appended && this.done && !this.grid.querySelector('.card')) {
+        renderGridEmpty(this.grid, this.emptyMsg);
+      }
+    } catch (e) {
+      if (seq === this.seq) { // stale failures stay quiet — a newer load owns the grid
+        if (reset) this.grid.innerHTML = ''; // don't leave skeletons up
+        this.done = false; // a later scroll retry re-fires this
+        this.busy = false;
+        toast('Load failed: ' + e.message, true);
+      }
+      return;
+    }
+    if (seq !== this.seq) return;
+    this.busy = false;
+    this.footer.classList.toggle('busy', false);
+    this.footer.classList.toggle('end', this.done);
+    // short pages never push the footer out of the trigger zone (and no new
+    // scroll event fires on us) — keep chaining while cards actually land
+    if (!this.done && appended > 0) this.maybeFetch();
+  }
 }
 
-function renderBrowsePages(page, total) {
-  const box = $('browsePages');
-  box.innerHTML = '';
-  if (total <= 1) return;
-  for (const p of pageList(page, total)) {
-    if (p === '…') {
-      box.appendChild(el('span', 'page-gap', '…'));
-    } else {
-      const b = el('button', 'page-btn', String(p));
-      b.classList.toggle('active', p === page);
-      box.appendChild(b);
-    }
-  }
+// every scroll of the content pane offers the live loaders a chance to fetch
+mainEl.addEventListener('scroll', () => {
+  for (const L of infLoaders) L.maybeFetch();
+}, { passive: true });
+
+function infCheck() {
+  for (const L of infLoaders) L.maybeFetch();
 }
 
 const GENRES = [
@@ -798,12 +988,10 @@ const GENRES = [
   'workplace',
 ];
 
-// rating filter: R+ / Rx only exist while 18+ content is allowed to show —
-// under "Hide" those listings would be filtered out anyway (empty results)
+// rating filter: family-safe — R+ / Rx are never offered (they'd yield empty
+// results anyway)
 function ratingOptions() {
-  const base = [['g', 'G'], ['pg', 'PG'], ['pg_13', 'PG-13'], ['r_17', 'R']];
-  if (prefs().showR18) base.push(['r_plus', 'R+'], ['rx', 'Rx']);
-  return base;
+  return [['g', 'G'], ['pg', 'PG'], ['pg_13', 'PG-13'], ['r_17', 'R']];
 }
 
 const FILTER_OPTIONS = {
@@ -821,7 +1009,7 @@ const FILTER_OPTIONS = {
   ],
 };
 
-const browse = { mode: 'letter', letter: 'all', page: 1, totalPages: 1, seq: 0 };
+const browse = { mode: 'letter', letter: 'all' };
 const bfSelects = ['Type', 'Status', 'Genre', 'Rating', 'Score', 'Season', 'Language', 'Sort'];
 // select suffix -> query param (the site's filter form uses singular `genre`;
 // `genres` used to work but is ignored by the backend today)
@@ -829,6 +1017,38 @@ const bfParams = {
   Type: 'type', Status: 'status', Genre: 'genre', Rating: 'rating',
   Score: 'score', Season: 'season', Language: 'language', Sort: 'sort',
 };
+
+const browseInf = new InfList({
+  footer: $('browseLoad'),
+  grid: $('browseGrid'),
+  view: 'browseView',
+  emptyMsg: 'Nothing to show here',
+  fetchPage: async (page) => {
+    const q = new URLSearchParams();
+    if (browse.mode === 'letter') q.set('letter', browse.letter);
+    else {
+      for (const f of bfSelects) {
+        const v = $('bf' + f).value;
+        if (v) q.set(bfParams[f], v);
+      }
+    }
+    q.set('page', String(page));
+    return await api('/api/browse?' + q.toString());
+  },
+});
+// the loader only ever runs for Browse; add it once, next to the engine
+infLoaders.add(browseInf);
+
+// jump from a detail page's genre chips into Browse pre-filtered to that genre
+function browseByGenre(slug) {
+  if (!slug || !GENRES.includes(slug)) return; // unknown slug — leave Browse alone
+  showView('browseView');
+  browse.mode = 'filters';
+  $('alphaBar').querySelectorAll('.alpha-btn').forEach((x) => x.classList.remove('active'));
+  for (const f of bfSelects) $('bf' + f).value = '';
+  $('bfGenre').value = slug;
+  browseInf.reset();
+}
 
 function rebuildRatingFilter() {
   const sel = $('bfRating');
@@ -859,10 +1079,9 @@ function initBrowseUI() {
     if (!b) return;
     browse.mode = 'letter';
     browse.letter = b.dataset.letter;
-    browse.page = 1;
     bar.querySelectorAll('.alpha-btn').forEach((x) => x.classList.toggle('active', x === b));
     for (const f of bfSelects) $('bf' + f).value = '';
-    loadBrowse();
+    browseInf.reset();
   });
 
   // filter selects (rating is filled by rebuildRatingFilter — its options
@@ -885,20 +1104,18 @@ function initBrowseUI() {
     }
     sel.addEventListener('change', () => {
       browse.mode = 'filters';
-      browse.page = 1;
       $('alphaBar').querySelectorAll('.alpha-btn').forEach((x) => x.classList.remove('active'));
-      loadBrowse();
+      browseInf.reset();
     });
   }
 
   $('bfReset').addEventListener('click', () => {
     browse.mode = 'letter';
     browse.letter = 'all';
-    browse.page = 1;
     $('alphaBar').querySelectorAll('.alpha-btn').forEach((x) =>
       x.classList.toggle('active', x.dataset.letter === 'all'));
     for (const f of bfSelects) $('bf' + f).value = '';
-    loadBrowse();
+    browseInf.reset();
   });
 
   // mobile: the filter row lives behind a collapsible panel
@@ -916,73 +1133,6 @@ function initBrowseUI() {
     });
   }
 
-  const browseTop = () => { $('main').scrollTop = 0; }; // new page starts at the top of the content
-  $('browsePrev').addEventListener('click', () => {
-    if (browse.page > 1) { browse.page -= 1; loadBrowse(); browseTop(); }
-  });
-  $('browseNext').addEventListener('click', () => {
-    if (browse.page < browse.totalPages) { browse.page += 1; loadBrowse(); browseTop(); }
-  });
-  $('browsePages').addEventListener('click', (e) => {
-    const b = e.target.closest('.page-btn');
-    if (!b || Number(b.textContent) === browse.page) return;
-    browse.page = Number(b.textContent);
-    loadBrowse();
-    browseTop();
-  });
-}
-
-async function loadBrowse() {
-  // seq-based staleness: never drop a new request, only stale *responses*
-  const seq = ++browse.seq;
-  $('browseLoading').hidden = true;
-  renderSkeletonCards($('browseGrid'), 12);
-  const q = new URLSearchParams();
-  if (browse.mode === 'letter') q.set('letter', browse.letter);
-  else {
-    for (const f of bfSelects) {
-      const v = $('bf' + f).value;
-      if (v) q.set(bfParams[f], v);
-    }
-  }
-  q.set('page', String(browse.page));
-  try {
-    const { results, totalPages, page } = await api('/api/browse?' + q.toString());
-    if (seq !== browse.seq || state.view !== 'browseView') return; // superseded / user moved on
-    browse.page = page;
-    browse.totalPages = totalPages;
-    const grid = $('browseGrid');
-    grid.innerHTML = ''; // drop the skeleton placeholders
-    const shown = results.filter(r18Visible);
-    if (!shown.length) renderGridEmpty(grid, 'Nothing to show here');
-    else for (const r of shown) grid.appendChild(makeCard(r));
-    sweepAdultRatings(grid);
-    $('browsePageLabel').textContent = totalPages > 1
-      ? `Page ${page} of ${totalPages}`
-      : 'Page 1';
-    $('browsePrev').disabled = page <= 1;
-    $('browseNext').disabled = page >= totalPages;
-    renderBrowsePages(page, totalPages);
-  } catch (e) {
-    if (seq === browse.seq) {
-      $('browseGrid').innerHTML = ''; // don't leave skeletons up
-      toast('Browse failed: ' + e.message, true);
-    }
-  } finally {
-    if (seq === browse.seq) $('browseLoading').hidden = true;
-  }
-}
-
-// jump from a detail page's genre chips into Browse pre-filtered to that genre
-function browseByGenre(slug) {
-  if (!slug || !GENRES.includes(slug)) return; // unknown slug — leave Browse alone
-  showView('browseView');
-  browse.mode = 'filters';
-  browse.page = 1;
-  $('alphaBar').querySelectorAll('.alpha-btn').forEach((x) => x.classList.remove('active'));
-  for (const f of bfSelects) $('bf' + f).value = '';
-  $('bfGenre').value = slug;
-  loadBrowse();
 }
 
 /* ---------------- home / search ---------------- */
@@ -1016,8 +1166,8 @@ mqMobile.addEventListener?.('change', () => {
 });
 
 function navHome() {
+  if (appOffline) return showView('profileView'); // lockdown — home only works online
   state.query = '';
-  state.page = 1;
   $('resultsSection').hidden = true;
   $('loadingState').hidden = true;
   showView('homeView');
@@ -1063,9 +1213,9 @@ async function loadSchedule(date) {
   date = date || schedIso(new Date());
   document.querySelectorAll('.sched-day').forEach((b) => b.classList.toggle('active', b.dataset.date === date));
   const seq = ++schedReq;
-  $('schedLoading').hidden = false;
+  $('schedLoading').hidden = true; // the placeholder rows carry the load state now
   $('schedEmpty').hidden = true;
-  $('schedList').innerHTML = '';
+  renderSkeletonSched($('schedList'), 6);
   try {
     const { items } = await api(`/api/schedule?date=${date}&tz=${new Date().getTimezoneOffset()}`);
     if (seq !== schedReq) return; // superseded by another day tap
@@ -1077,12 +1227,7 @@ async function loadSchedule(date) {
       const card = el('article', 'sched-card');
       const thumb = el('div', 'sched-thumb');
       const img = el('img');
-      if (it.poster) {
-        img.src = it.poster;
-        img.onerror = () => { img.src = `/stream?u=${btoaUrl(it.poster)}`; img.onerror = null; };
-      } else {
-        img.src = EMPTY_IMG;
-      }
+      loadPoster(img, it.poster);
       img.alt = it.title;
       img.loading = 'lazy';
       thumb.appendChild(img);
@@ -1108,12 +1253,19 @@ async function loadSchedule(date) {
   } catch (e) {
     if (seq === schedReq) {
       $('schedLoading').hidden = true;
+      $('schedList').innerHTML = ''; // don't leave placeholders up
       toast('Schedule failed: ' + e.message, true);
     }
   }
 }
 
 /* --- in-window mini player while browsing --- */
+
+// player-controls.js (pv) owns the custom video UI — it subscribes to these
+// events to re-sync its control bar, mount subtitle tracks, rebuild its
+// settings sheet and strip its chrome. Never awaits a pv handler.
+const emitPv = (name, detail) =>
+  document.dispatchEvent(new CustomEvent('pv:' + name, { detail }));
 
 function videoActive() {
   const v = $('video');
@@ -1125,24 +1277,42 @@ function videoActive() {
 function restoreVideoToPlayer() {
   $('videoArea').appendChild($('video'));
   $('miniPlayer').hidden = true;
+  emitPv('undock');
 }
 
-// the shell injects this right before the app is backgrounded — the system
-// picture-in-picture window mirrors the activity surface, so restore the full
-// player with all chrome stripped (body.pip-full) to make PiP video-only
+// the shell runs this right before the floating picture-in-picture window
+// mirrors the app surface: dock the video back into the full player if needed
+// and strip every piece of chrome (body.pip-full) so the mirror is video-only —
+// *including* when an episode was already playing full screen (the player page
+// itself is app UI: title, tabs, detail slot below the 16:9 band)
 window.__pipRestore = function () {
   const v = $('video');
-  if (state.view !== 'playerView' && videoActive()) {
-    restoreVideoToPlayer();
-    showView('playerView');
+  if (videoActive()) {
+    if (state.view !== 'playerView') {
+      restoreVideoToPlayer();
+      showView('playerView');
+    }
     document.body.classList.add('pip-full');
   }
   if (v && !v.paused) v.play().catch(() => {}); // re-kick playback if needed
 };
 
+// the activity tells us PiP starts/ends directly (deterministic, unlike AppState
+// which re-fires 'active' mid-transition while the window is still changing);
+// body.pip-full stays up for the whole floating-window lifetime
+window.__setPip = function (on) {
+  window.__inPip = !!on;
+  if (on) window.__pipRestore && window.__pipRestore();
+  else document.body.classList.remove('pip-full');
+  // the floating window has no system bars — the shell must drop its
+  // status-bar/gesture-bar padding or white bands frame the mirrered video
+  try { window.ReactNativeWebView?.postMessage(JSON.stringify({ type: 'pip', on: !!on })); } catch {}
+};
+
 function minimizeToMini() {
   if (!videoActive()) return false;
   $('miniTitle').textContent = `${state.title} — EP ${state.epNum} (${state.type.toUpperCase()})`;
+  emitPv('dock'); // pv hides itself + hands controls back to the native bar
   $('miniSlot').appendChild($('video'));
   $('miniPlayer').hidden = false;
   toast('Video continues in the mini player');
@@ -1160,7 +1330,7 @@ $('miniClose').addEventListener('click', () => stopPlayback());
    MOVING the live detail nodes into #playerDetailSlot while an episode plays
    (same trick as the <video> ↔ #miniSlot move above). Reparenting keeps every
    listener and ID lookup alive — nothing re-renders. */
-const DETAIL_NODE_IDS = ['detailMeta', 'detailTabs', 'panelEpisodes', 'panelSeasons', 'panelRelated', 'panelDetails'];
+const DETAIL_NODE_IDS = ['detailMeta', 'detailTabs', 'panelEpisodes', 'panelSeasons', 'panelRelated', 'panelCast', 'panelDetails'];
 let detailMounted = false;
 
 function ensureDetailMounted() {
@@ -1170,9 +1340,8 @@ function ensureDetailMounted() {
   // the info card (synopsis/genres/studio…) moves under the player's
   // //DETAILS tab; back on the detail page it returns into #detailMeta
   $('panelDetails').appendChild($('detailInfo'));
-  // the audio/server/quality controls move under the band too, between the
-  // title header and the tabs (the ← Episodes button stays above the video)
-  slot.insertBefore($('playerRight'), $('detailTabs'));
+  // #playerRight (SUB-DUB / server / quality / auto-next) is not parked here
+  // anymore — player-controls.js relocates it onto the video overlay (#pvChips)
   // loading veil + skip-intro position against #playerWrap today; inside
   // #videoArea they track the video band exactly (incl. fullscreen)
   $('videoArea').append($('skipIntroBtn'), $('playerLoading'));
@@ -1184,8 +1353,8 @@ function restorePlayerDetail() {
   if (!detailMounted) return;
   $('detailGrid').appendChild($('detailMeta')); // after the poster, original order
   $('detailMeta').appendChild($('detailInfo')); // back inside the meta block
-  $('playerTopRow').appendChild($('playerRight')); // controls back above the band
-  const view = $('detailView'); // tabs + panels are its last 5 children
+  // #playerRight stays in the pv overlay (see ensureDetailMounted)
+  const view = $('detailView'); // tabs + panels are its last 6 children
   for (const id of DETAIL_NODE_IDS.slice(1)) view.appendChild($(id));
   const wrap = $('playerWrap');
   wrap.insertBefore($('skipIntroBtn'), $('playerTop')); // original DOM order
@@ -1239,6 +1408,15 @@ const detailAlive = () => state.view === 'detailView' || detailMounted;
    docks a playing episode into the mini player and leaves a history-trail
    entry so the back button / hardware back return to where you were */
 async function topNav(target) {
+  // offline lockdown: menu entries that need the network fold onto the
+  // profile instead of loading a page that would just error out
+  if (appOffline && target !== 'profile' && target !== 'settings') {
+    offlineNotice();
+    renderProfile();
+    pollSync();
+    showView('profileView');
+    return;
+  }
   if (state.view === 'playerView') {
     // dock the video into the in-window mini player — playback survives the
     // reparent, so browsing around never interrupts an episode
@@ -1261,8 +1439,10 @@ async function topNav(target) {
     showView('scheduleView');
     loadSchedule(); // defaults to today; re-tap just re-selects the same day
   } else if (target === 'browse') {
-    showView('browseView');
-    loadBrowse(); // loadBrowse exits results mode — the full catalog shows
+    showView('browseView'); // showView restores the accumulated list's scroll
+    // nothing to reload while the infinite list is on screen — refetch only
+    // when it's empty (first visit) or nothing but skeletons landed in it
+    if (!$('browseGrid').querySelector('.card')) browseInf.reset();
   } else if (target === 'feedback') {
     showView('feedbackView');
     loadFeedback();
@@ -1305,6 +1485,28 @@ document.addEventListener('click', (e) => {
   applySidebar();
 });
 
+// search results: the same infinite engine, one loader over the query string
+const searchInf = new InfList({
+  footer: $('moreRow'),
+  grid: $('resultsGrid'),
+  view: 'homeView',
+  emptyMsg: 'No results found',
+  endMsg: 'End of results',
+  onReset: () => {
+    $('resultsSection').hidden = false;
+    $('recentSection').hidden = true; // search results take over the home view
+    $('continueSection').hidden = true; // ...and so do the continue-watching cards
+    $('emptyState').hidden = true;
+  },
+  fetchPage: async (page) => {
+    const { results } = await api(
+      `/api/search?q=${encodeURIComponent(state.query)}&page=${page}`
+    );
+    return { results, totalPages: Infinity }; // no page count — an empty page is the end
+  },
+});
+infLoaders.add(searchInf);
+
 $('searchForm').addEventListener('submit', (e) => {
   e.preventDefault();
   const q = $('searchInput').value.trim();
@@ -1312,46 +1514,11 @@ $('searchForm').addEventListener('submit', (e) => {
   // revealing results over the home sections is a forward hop — back undoes it
   if ($('resultsSection').hidden) pushHist(() => restoreView('homeView'));
   state.query = q;
-  state.page = 1;
-  $('resultsGrid').innerHTML = '';
   $('resultsTitle').textContent = `Results for “${q}”`;
   showView('homeView');
-  loadResults();
-});
-
-$('moreBtn').addEventListener('click', () => {
-  state.page += 1;
-  loadResults(true);
-});
-
-async function loadResults(append) {
-  $('loadingState').hidden = true;
-  $('resultsSection').hidden = false;
-  $('recentSection').hidden = true; // search results take over the home view
-  $('continueSection').hidden = true; // ...and so do the continue-watching cards
   $('emptyState').hidden = true;
-  $('moreBtn').hidden = true;
-  if (!append) renderSkeletonCards($('resultsGrid'), 12);
-  try {
-    const { results } = await api(
-      `/api/search?q=${encodeURIComponent(state.query)}&page=${state.page}`
-    );
-    if (!append) $('resultsGrid').innerHTML = '';
-    const shown = results.filter(r18Visible);
-    for (const r of shown) $('resultsGrid').appendChild(makeCard(r));
-    sweepAdultRatings($('resultsGrid'));
-    $('moreBtn').hidden = results.length === 0;
-    if (!append && !shown.length) {
-      $('resultsTitle').textContent = 'No results found';
-      renderGridEmpty($('resultsGrid'), 'No results found');
-    }
-  } catch (e) {
-    if (!append) $('resultsGrid').innerHTML = ''; // don't leave skeletons up
-    toast('Search failed: ' + e.message, true);
-  } finally {
-    $('loadingState').hidden = true;
-  }
-}
+  searchInf.reset();
+});
 
 // placeholder shimmer cards shown in grids while network content loads
 function renderSkeletonCards(grid, count) {
@@ -1368,6 +1535,23 @@ function renderSkeletonCards(grid, count) {
 // empty-grid state: shown wherever content filtering (or a fresh search)
 // leaves a grid with nothing in it (local copy, background stripped)
 const EMPTY_IMG = 'empty.png';
+
+/* remote artwork loader, shared by every grid / row / hero image: every poster
+   goes through the server's /img endpoint, which serves an already-cached copy
+   from disk (so viewed art keeps working with the network down) or fetches the
+   CDN once and saves it. The bundled placeholder art covers a dead URL — a
+   broken-image glyph can never surface. A missing URL gets the placeholder outright. */
+function posterLocal(url) {
+  return url ? `/img?u=${btoaUrl(url)}` : null;
+}
+function loadPoster(img, url) {
+  if (!url) {
+    img.src = EMPTY_IMG;
+    return;
+  }
+  img.onerror = () => { img.onerror = null; img.src = EMPTY_IMG; };
+  img.src = posterLocal(url);
+}
 function renderGridEmpty(grid, message) {
   grid.innerHTML = '';
   const box = el('div', 'empty-rated');
@@ -1385,47 +1569,123 @@ function renderSkeletonEps(grid, count) {
   for (let i = 0; i < count; i++) grid.appendChild(el('div', 'sk-ep sk'));
 }
 
+// placeholder rows shaped like the schedule's airing list
+function renderSkeletonSched(grid, count) {
+  grid.innerHTML = '';
+  for (let i = 0; i < count; i++) {
+    const row = el('div', 'sk-sched');
+    row.appendChild(el('div', 'sk-sched-thumb sk'));
+    const info = el('div', 'sk-sched-info');
+    info.appendChild(el('div', 'sk-line sk'));
+    info.appendChild(el('div', 'sk-line short sk'));
+    info.appendChild(el('div', 'sk-line sk'));
+    row.appendChild(info);
+    grid.appendChild(row);
+  }
+}
+
+// placeholder cards shaped like the feedback board's entries
+function renderSkeletonFeedback(list, count) {
+  list.innerHTML = '';
+  for (let i = 0; i < count; i++) {
+    const row = el('div', 'sk-fb');
+    row.appendChild(el('div', 'sk-line short sk'));
+    row.appendChild(el('div', 'sk-line sk'));
+    row.appendChild(el('div', 'sk-line sk'));
+    list.appendChild(row);
+  }
+}
+
 function makeCard(r) {
   const card = el('div', 'card');
   card.dataset.slug = r.slug; // sweepAdultRatings finds/hides cards by slug
   card.title = r.title; // native tooltip shows the full name over the clamped title
   const media = el('div', 'card-media'); // anchors the date badge to the art, not the title
   const img = el('img');
-  if (r.poster) {
-    img.src = r.poster;
-    img.onerror = () => { img.src = `/stream?u=${btoaUrl(r.poster)}`; img.onerror = null; };
-  }
+  loadPoster(img, r.poster);
   img.loading = 'lazy';
   media.appendChild(img);
+  const title = el('div', 'card-title'); // gradient veil + clamped text below
+  title.appendChild(el('div', 'card-title-text', r.title));
+  media.appendChild(title);
   card.appendChild(media);
-  card.appendChild(el('div', 'card-title', r.title));
   card.addEventListener('click', () => openDetail(r.slug, r.title, r.poster));
   attachFavBtn(card, r);
   return card;
 }
 
-/* ---------------- recently updated ---------------- */
+/* ---------------- recently updated / Popular / Top Rated (home tabs) ---------------- */
 
-async function loadRecent() {
+// one grid under a tab strip: the recently-updated feed, the site's
+// most-popular list and its highest-scored shows. Tab state is session-only.
+let homeTab = 'recent';
+const HOME_TABS = {
+  recent: '/api/recent',
+  popular: '/api/homelist?tab=popular',
+  toprated: '/api/homelist?tab=toprated',
+};
+// short client-side cache so tab flips are instant (the server adds its own
+// longer TTL cache, so a refresh here still reuses warmed lists)
+const homeTabCache = new Map(); // tab -> [ { slugs: Set, results } ]
+let loadingTab = false;
+
+async function loadRecent(tab = homeTab, force = false) {
   const section = $('recentSection');
   section.hidden = false;
-  $('recentLoading').hidden = true;
-  renderSkeletonCards($('recentGrid'), 12);
+  loadingTab = true;
   try {
-    const { results } = await api('/api/recent');
+    const cached = homeTabCache.get(tab);
+    if (cached && !force) {
+      renderHomeTab(tab, cached, false);
+      return;
+    }
+    renderSkeletonCards($('recentGrid'), 12);
+    const { results } = await api(HOME_TABS[tab]);
     if (state.view !== 'homeView' || !$('resultsSection').hidden) return; // user moved on
+    homeTabCache.set(tab, results);
+    renderHomeTab(tab, results, true);
+  } catch {
+    // tab fetch failed (hiccups happen): keep the section and the tab strip,
+    // drop in a tappable hint — tapping the tab again refetches
+    if (state.view !== 'homeView') return;
     $('recentLoading').hidden = true;
     const grid = $('recentGrid');
     grid.innerHTML = '';
-    const shown = results.filter(r18Visible).slice(0, 30);
-    if (!shown.length) renderGridEmpty(grid, 'Nothing to show right now');
-    else for (const r of shown) grid.appendChild(makeCard(r));
-    sweepAdultRatings(grid);
-    state.recentLoaded = true;
-  } catch {
-    section.hidden = true; // best-effort: hide rather than break the home view
+    renderGridEmpty(grid, "Can't load this tab — tap the tab to retry");
+  } finally {
+    loadingTab = false;
   }
 }
+// paint a settled result set: cards (+ NEW pills on the update feed)
+function renderHomeTab(tab, results, spin) {
+  const section = $('recentSection');
+  section.hidden = false;
+  $('recentLoading').hidden = true;
+  const grid = $('recentGrid');
+  grid.innerHTML = '';
+  const shown = results.filter(r18Visible).slice(0, 30);
+  if (!shown.length) renderGridEmpty(grid, 'Nothing to show right now');
+  else for (const r of shown) grid.appendChild(makeCard(r));
+  // every show on the recently-updated feed just released an episode
+  if (tab === 'recent') {
+    rememberRecent(results);
+    for (const media of grid.querySelectorAll('.card .card-media')) {
+      if (!media.querySelector('.new-badge')) media.appendChild(newBadgeEl());
+    }
+  }
+  sweepAdultRatings(grid);
+  state.recentLoaded = true;
+}
+// tab strip wiring
+$('homeTabs').addEventListener('click', (e) => {
+  const btn = e.target.closest('#homeTabs button'); // clicks on the gaps do nothing
+  if (!btn) return;
+  const tab = btn.dataset.tab;
+  if (!tab || tab === homeTab || loadingTab) return;
+  homeTab = tab;
+  for (const b of $('homeTabs').querySelectorAll('button')) b.classList.toggle('active', b === btn);
+  loadRecent(tab);
+});
 
 /* ---------------- hero spotlight carousel ---------------- */
 
@@ -1438,22 +1698,20 @@ let heroTimer = null;
 const HERO_ADVANCE_MS = 7000;
 
 async function loadHero() {
+  $('heroSkeleton').hidden = false; // shimmer until spotlight returns (or fails)
   try {
     const { results } = await api('/api/spotlight');
     heroItems = results.filter(r18Visible).slice(0, 5);
-    if (!heroItems.length) return;
-    renderHero();
+    if (heroItems.length) renderHero();
   } catch { /* hero stays hidden */ }
+  $('heroSkeleton').hidden = true; // success or fail — never leave it blinking
 }
 
 function heroSlideHtml(r, i, active) {
   const slide = el('div', 'hero-slide');
   if (active) slide.classList.add('active');
   const img = el('img', 'hero-bg');
-  if (r.banner) {
-    img.src = r.banner;
-    img.onerror = () => { img.src = `/stream?u=${btoaUrl(r.banner)}`; img.onerror = null; };
-  }
+  loadPoster(img, r.banner);
   img.alt = '';
   slide.appendChild(img);
   slide.appendChild(el('div', 'hero-veil'));
@@ -1547,12 +1805,19 @@ function restartHeroTimer() {
 let upcomingData = null; // cached /api/upcoming results
 
 async function loadUpcoming() {
+  const skeleton = $('upSkeleton');
+  if (!upcomingData) { // first load: shimmer bar before the strip knows its shape
+    skeleton.hidden = false;
+    skeleton.innerHTML = '';
+    for (let i = 0; i < 6; i++) skeleton.appendChild(el('div', 'sk-up-item sk'));
+  }
   try {
     const { results } = await api('/api/upcoming');
     upcomingData = results;
     checkStaleUpcoming(results); // async — render now, drop stale cards when known
     renderUpcoming();
   } catch { /* best-effort: the sections simply stay hidden */ }
+  skeleton.hidden = true; // success or fail — no placeholder left behind
 }
 
 // The source keeps shows listed as upcoming after their premiere date has
@@ -1646,10 +1911,7 @@ function renderUpcomingMarquee() {
     for (const r of items) {
       const b = el('button', 'up-item');
       const img = el('img');
-      if (r.poster) {
-        img.src = r.poster;
-        img.onerror = () => { img.src = `/stream?u=${btoaUrl(r.poster)}`; img.onerror = null; };
-      }
+      loadPoster(img, r.poster);
       img.loading = 'lazy';
       img.alt = '';
       b.appendChild(img);
@@ -1729,11 +1991,16 @@ function renderContinue() {
   grid.innerHTML = '';
   for (const it of items) {
     const card = el('div', 'card');
+    const media = el('div', 'card-media');
     const img = el('img');
-    if (it.poster) img.src = it.poster;
+    loadPoster(img, it.poster);
     img.loading = 'lazy';
-    card.appendChild(img);
-    card.appendChild(el('div', 'card-title', it.title));
+    media.appendChild(img);
+    card.dataset.slug = it.slug;
+    const title = el('div', 'card-title'); // gradient veil + clamped text below
+    title.appendChild(el('div', 'card-title-text', it.title));
+    media.appendChild(title);
+    card.appendChild(media);
     card.title = it.title; // native tooltip shows the full name over the clamped title
     const bar = el('div', 'resume-bar');
     const fill = el('div');
@@ -1767,7 +2034,7 @@ function renderContinue() {
 }
 
 $('clearHistoryBtn').addEventListener('click', async () => {
-  if (!(await confirmDialog('Remove every show from your watch history?', { title: 'Clear watch history', okText: 'Clear all' }))) return;
+  if (!(await confirmDialog('Remove every show from your watch history?', { title: 'Clear watch history', okText: 'Clear all', icon: 'i-trash', danger: true }))) return;
   for (const slug of Object.keys(getJSON())) addTombstone('progress', slug);
   setJSON({});
   toast('Watch history cleared');
@@ -1924,28 +2191,43 @@ function syncSynopsisToggle() {
   st.hidden = !expanded && syn.scrollHeight <= syn.clientHeight + 2;
 }
 
+/* true when the detail page on screen was served from the offline disk cache
+   (/api/detail adds cached:true) — the info card gets a small "Saved copy" chip */
+let detailStale = false;
+
 async function loadDetailInfo() {
   const slug = state.slug;
+  let d = null;
   try {
-    const d = await api(`/api/detail?slug=${encodeURIComponent(slug)}`);
-    if (state.slug === slug) {
-      // entry points that only know the slug (hero spotlight) open with no
-      // poster — the detail page's own art backfills the card and the backdrop
-      if (d.poster && !state.poster) {
-        state.poster = d.poster;
-        $('detailPoster').src = d.poster;
-        $('detailHero').style.setProperty(
-          '--detail-bg',
-          `url("${d.poster.replace(/"/g, '%22')}")`
-        );
-      }
-      state.audioCounts = { sub: d.subCount || null, dub: d.dubCount || null };
-      applyAudioAvail(d);
-      renderDetailInfo(d);
-      renderRelated(d);
-      renderRecommendations(d);
+    d = await api(`/api/detail?slug=${encodeURIComponent(slug)}`);
+  } catch { /* nothing cached and the source unreachable — handled below */ }
+  if (state.slug !== slug) return; // user hopped shows mid-fetch
+  detailStale = !!(d && d.cached);
+  if (d) {
+    // entry points that only know the slug (hero spotlight) open with no
+    // poster — the detail page's own art backfills the card and the backdrop
+    if (d.poster && !state.poster) {
+      state.poster = d.poster;
+      setDetailPoster(d.poster);
+      $('detailHero').style.setProperty('--detail-bg', `url("${posterLocal(d.poster)}")`);
     }
-  } catch { /* details are best-effort */ }
+    state.audioCounts = { sub: d.subCount || null, dub: d.dubCount || null };
+    applyAudioAvail(d);
+    renderDetailInfo(d);
+    if (detailStale) $('detailChips').appendChild(el('span', 'chip chip-faint', 'Saved copy'));
+    renderRelated(d);
+    renderRecommendations(d);
+  } else {
+    // offline with nothing saved: kill the skeleton and say what happened,
+    // instead of leaving the info card loading forever. renderDetailInfo hides
+    // #detailInfo when it has nothing to render — the note lives in there, so
+    // re-show just the note.
+    renderDetailInfo({ genres: [], studios: [], producers: [] });
+    $('detailChips').hidden = true;
+    $('detailMetaRows').hidden = true;
+    $('detailInfo').hidden = false;
+    $('detailNoData').hidden = false;
+  }
 }
 
 /* ---- audio availability ----
@@ -1969,6 +2251,25 @@ function applyAudioAvail(d) {
     state.type = state.audioAvail.sub ? 'sub' : 'dub';
   }
   syncSwapToggle();
+  sweepTrackAuds(); // best-effort: narrows the grid to real per-ep audio
+}
+
+// per-episode audio sweep for shows small enough that probing each episode
+// (1 request/ep) is sane. Only worth it when the show HAS dub — a sub-only
+// show serves every listed ep in its only track. Re-renders when it lands.
+async function sweepTrackAuds() {
+  const slug = state.slug;
+  if (!state.audioAvail || !state.audioAvail.dub || state.episodes.length > 60) return;
+  if (state.epAuds) return; // already narrowed by the probe (or probing done)
+  try {
+    const j = await fetch(`/api/auds?slug=${encodeURIComponent(slug)}`,
+      { signal: AbortSignal.timeout(120000) });
+    if (!j.ok) return;
+    const { auds } = await j.json();
+    if (state.slug !== slug) return; // another show opened meanwhile
+    state.epAuds = auds || null;
+    if (state.epAuds) renderEpisodes();
+  } catch { /* narrowing is best-effort; the tagged counts stay */ }
 }
 
 /* ---- seasons & movies (the source's "Related Anime" block) ---- */
@@ -2022,6 +2323,7 @@ const DETAIL_PANELS = {
   episodes: 'panelEpisodes',
   seasons: 'panelSeasons',
   related: 'panelRelated',
+  cast: 'panelCast',
   details: 'panelDetails', // player screen only (tab hidden on the detail page)
 };
 
@@ -2034,6 +2336,7 @@ function setDetailTab(name) {
   if (name === 'seasons' && !state.relCountsLoaded && (state.related || []).length) {
     loadRelCounts();
   }
+  if (name === 'cast') loadCast(); // lazily fetched, once per show
 }
 
 $('detailTabs').addEventListener('click', (e) => {
@@ -2045,14 +2348,63 @@ $('detailTabs').addEventListener('click', (e) => {
 // no recommendations → no RELATED tab, neither → no tab row at all. Under the
 // player the row stays up regardless — //DETAILS is always available there.
 function syncDetailTabs() {
+  if (appOffline) { applyOfflineDetail(); return; } // row folds — see applyOfflineDetail
   const hasRel = !$('relSection').hidden;
   const hasRec = !$('recSection').hidden;
   const tabs = $('detailTabs');
   tabs.querySelector('[data-tab="seasons"]').hidden = !hasRel;
   tabs.querySelector('[data-tab="related"]').hidden = !hasRec;
-  tabs.hidden = !detailMounted && !hasRel && !hasRec;
+  // //CAST is always there (lazy-fetched on first open) — with it in the row,
+  // the row is live on every detail page, even section-less ones
+  tabs.hidden = false;
   if ((state.detailTab === 'seasons' && !hasRel) ||
       (state.detailTab === 'related' && !hasRec)) setDetailTab('episodes');
+}
+
+/* ---- //CAST tab (characters + Japanese voice actors) ----
+   Fill is lazy (first open of the tab) and memoized per show: hopping
+   tab → show → tab doesn't re-hit the network. A fetch racing a show
+   hop is dropped by the slug check. */
+async function loadCast() {
+  if (!state.slug || state.detailTab !== 'cast') return; // tab closed mid-fetch
+  if (state.castSlug === state.slug && state.castDone) return; // already filled
+  const wasFailed = state.castSlug === state.slug && state.castFailed;
+  state.castSlug = state.slug;
+  state.castDone = false;
+  state.castFailed = false;
+  if (!wasFailed) $('castGrid').innerHTML = '';
+  $('castEmpty').hidden = true;
+  $('castLoad').hidden = false;
+  try {
+    const { cast } = await api(`/api/cast?slug=${encodeURIComponent(state.slug)}`);
+    if (state.castSlug !== state.slug) return; // user hopped shows mid-fetch
+    $('castLoad').hidden = true;
+    state.castDone = true;
+    if (!cast || !cast.length) {
+      $('castEmpty').textContent = 'No cast information found';
+      $('castEmpty').hidden = false;
+      return;
+    }
+    const img0 = $('castGrid').querySelector('img'); // keep retry cards' art
+    if (!img0) $('castGrid').innerHTML = '';
+    for (const c of cast) {
+      const card = el('div', `cast-card${c.main ? ' lead' : ''}`);
+      const img = el('img');
+      loadPoster(img, c.image);
+      card.appendChild(img);
+      const txt = el('div', 'cast-txt');
+      txt.appendChild(el('div', 'cast-name', c.name || '?'));
+      txt.appendChild(el('div', 'cast-va', c.va ? `${c.va.name} (Japanese)` : 'No VA listed'));
+      card.appendChild(txt);
+      $('castGrid').appendChild(card);
+    }
+  } catch (e) {
+    if (state.castSlug !== state.slug) return;
+    $('castLoad').hidden = true;
+    state.castFailed = true;
+    $('castEmpty').textContent = `Cast unavailable — tap CAST to retry (${e.message || e})`;
+    $('castEmpty').hidden = false;
+  }
 }
 
 /* ---- collection pages ----
@@ -2060,13 +2412,25 @@ function syncDetailTabs() {
    (paginated, served by /api/collection) or a static list (a show's full
    seasons & movies from the "View all" button). */
 
-const collection = { seq: 0, path: null, page: 1, totalPages: 1, title: '' };
+const collection = { path: null, title: '' };
+
+// studio / producer listings: the same infinite engine, scrolled over the path
+const collInf = new InfList({
+  footer: $('collectionLoad'),
+  grid: $('collectionGrid'),
+  view: 'collectionView',
+  emptyMsg: 'Nothing to show here',
+  fetchPage: async (page) =>
+    await api(`/api/collection?path=${encodeURIComponent(collection.path)}&page=${page}`),
+});
+infLoaders.add(collInf);
 
 async function openCollection(opts) {
   const fromView = state.view; // capture before the view changes
   pushHist(() => restoreView(fromView)); // trail: back returns to where we came from
-  collection.seq++;
+  scrollMem.collectionView = 0; // each collection opens at the top
   if (opts.kind === 'list') {
+    // static list: everything on screen at once, no loader needed
     collection.path = null;
     $('collectionTitle').textContent = opts.title;
     const grid = $('collectionGrid');
@@ -2075,49 +2439,16 @@ async function openCollection(opts) {
     if (!items.length) renderGridEmpty(grid, 'Nothing to show here');
     else for (const r of items) grid.appendChild(makeCard(r));
     sweepAdultRatings(grid);
-    $('collectionPager').hidden = true;
+    $('collectionLoad').hidden = true;
     showView('collectionView');
   } else {
     collection.path = opts.path;
     collection.title = opts.title;
-    collection.page = 1;
-    showView('collectionView');
-    await loadCollection();
-  }
-}
-
-async function loadCollection() {
-  const seq = ++collection.seq;
-  renderSkeletonCards($('collectionGrid'), 12);
-  try {
-    const { results, totalPages, page } = await api(
-      `/api/collection?path=${encodeURIComponent(collection.path)}&page=${collection.page}`
-    );
-    if (seq !== collection.seq) return;
-    collection.page = page;
-    collection.totalPages = totalPages;
-    const grid = $('collectionGrid');
-    grid.innerHTML = '';
-    const shown = results.filter(r18Visible);
-    if (!shown.length) renderGridEmpty(grid, 'Nothing to show here');
-    else for (const r of shown) grid.appendChild(makeCard(r));
-    sweepAdultRatings(grid);
     $('collectionTitle').textContent = `${collection.title} anime`;
-    $('colPageLabel').textContent = totalPages > 1 ? `Page ${page} of ${totalPages}` : '';
-    $('colPrev').disabled = page <= 1;
-    $('colNext').disabled = page >= totalPages;
-    $('collectionPager').hidden = totalPages <= 1;
-  } catch (e) {
-    if (seq === collection.seq) toast('Could not load this page: ' + e.message, true);
+    showView('collectionView');
+    await collInf.reset();
   }
 }
-
-$('colPrev').addEventListener('click', () => {
-  if (collection.page > 1) { collection.page -= 1; loadCollection(); }
-});
-$('colNext').addEventListener('click', () => {
-  if (collection.page < collection.totalPages) { collection.page += 1; loadCollection(); }
-});
 
 /* ---- recommendations ----
    Six picks always on screen, driven by a genre profile: the current show's
@@ -2128,7 +2459,8 @@ let recSeq = 0;
 async function renderRecommendations(d) {
   const seq = ++recSeq;
   const section = $('recSection');
-  section.hidden = true;
+  section.hidden = false; // skeleton up while the genre picks resolve
+  renderSkeletonCards($('recGrid'), 6);
   syncDetailTabs();
   const seen = new Set([state.slug]);
   for (const s of Object.keys(getFavs())) seen.add(s);
@@ -2178,7 +2510,15 @@ async function renderRecommendations(d) {
       take(results);
     } catch { /* best-effort */ }
   }
-  if (seq !== recSeq || !detailAlive() || !picked.length) return;
+  if (seq !== recSeq || !detailAlive() || !picked.length) {
+    // nothing surfaced (or the user moved on): drop the placeholders
+    if (seq === recSeq && detailAlive()) {
+      section.hidden = true;
+      $('recGrid').innerHTML = '';
+      syncDetailTabs();
+    }
+    return;
+  }
   const grid = $('recGrid');
   grid.innerHTML = '';
   for (const r of picked) grid.appendChild(makeCard(r));
@@ -2199,6 +2539,24 @@ $('favBtn').addEventListener('click', () => {
   updateDetailFav();
   if (!$('profileView').hidden) renderFavorites();
 });
+
+/* detail poster loader: through the server's /img cache (same path the grid
+   covers use). The img keeps opacity 0 (#detailPoster:not(.ok)) until a load
+   succeeds, so a broken first fetch never flashes the browser's broken-image
+   glyph in the empty card. */
+function setDetailPoster(url) {
+  const img = $('detailPoster');
+  img.classList.remove('ok');
+  if (!url) { img.removeAttribute('src'); img.onload = null; img.onerror = null; return; }
+  img.onload = () => img.classList.add('ok');
+  // dead URL or an offline no-cache miss → the placeholder art instead of an empty card
+  img.onerror = () => {
+    img.onerror = null;
+    img.onload = () => img.classList.add('ok');
+    img.src = EMPTY_IMG;
+  };
+  img.src = posterLocal(url);
+}
 
 async function openDetail(slug, title, poster, onReady) {
   // trail: hopping to a show from anywhere (or from another detail page via
@@ -2224,45 +2582,71 @@ async function openDetail(slug, title, poster, onReady) {
   state.epNum = null;
   state.audioAvail = null; // unknown until the detail/episodes data lands
   state.audioProbed = false; // set once the server-list probe answers
-  state.detailTab = 'episodes';
   state.audioCounts = null;
+  state.epAuds = null; // fresh sweep per show
   state.relCountsLoaded = false;
   state.epFilter = '';
   $('epFindInput').value = '';
   $('epFindClear').hidden = true;
+  $('epNoMatch').hidden = true; // may be left up by the previous show
+  $('epFind').hidden = false; // re-hidden per show once the count is known (< 25 eps)
   $('epNoMatch').hidden = true;
-  setDetailTab('episodes');
+  if (appOffline) {
+    // offline lockdown: hero info card only — no episodes/seasons/related/cast
+    applyOfflineDetail();
+  } else {
+    setDetailTab('episodes');
+  }
   state.type = prefAudioType();
   syncSwapToggle();
   $('detailTitle').textContent = title;
   $('detailTitle').title = title; // desktop hover shows a long clamped title in full
-  $('detailPoster').src = poster || '';
-  // hero backdrop: same art, blurred behind the header (CSS reads --detail-bg)
+  setDetailPoster(poster);
+  // hero backdrop: same art, blurred behind the header (CSS reads --detail-bg);
+  // the local /img URL has no quotes so no escaping is needed
   $('detailHero').style.setProperty(
     '--detail-bg',
-    poster ? `url("${poster.replace(/"/g, '%22')}")` : 'none'
+    poster ? `url("${posterLocal(poster)}")` : 'none'
   );
   updateDetailFav();
+  detailStale = false; // per-show marker; loadDetailInfo re-decides it
+  $('detailNoData').hidden = true; // ...and the nothing-saved note
   renderDetailInfo(null); // hide stale info while loading
   $('recSection').hidden = true; // ...and stale recommendations
   $('relSection').hidden = true; // ...and stale seasons & movies
+  $('castGrid').innerHTML = '';
+  $('castEmpty').hidden = true;
+  $('castLoad').hidden = true; // //CAST refills on first open (per-show memo)
+  state.castSlug = null;
+  state.castDone = false;
+  state.castFailed = false;
   syncDetailTabs(); // tab row matches the (still empty) sections
   loadDetailInfo();
   $('epCount').textContent = '';
   // the back trail (pushHist above) now owns the "Back" button's destination
   showView('detailView');
   $('epLoading').hidden = true;
+  if (appOffline) {
+    // offline lockdown: the tab row is folded (applyOfflineDetail above), the
+    // episode grid stays empty (its fetch needs the network anyway), and the
+    // resume handoff is never delivered — the detail page is the destination
+    return;
+  }
   renderSkeletonEps($('epGrid'), 12);
   try {
     const { episodes, audio } = await api(`/api/episodes?slug=${encodeURIComponent(slug)}`);
     state.episodes = episodes;
+    trackVisits(slug, episodes.length); // visit baseline: new releases for non-favorites too
     if (audio) applyAudioAvail({ audio }); // hide toggles the show doesn't have
     $('epCount').textContent = episodes.length; // the h2 supplies the word EPISODES
     renderEpisodes();
     if (onReady) onReady();
   } catch (e) {
     $('epGrid').innerHTML = ''; // don't leave skeletons up
-    toast('Could not load episodes: ' + e.message, true);
+    const off = typeof navigator !== 'undefined' && navigator.onLine === false;
+    toast(off
+      ? 'Episodes need internet - the grid fills back in when you are online.'
+      : 'Could not load episodes: ' + e.message, !off);
   } finally {
     $('epLoading').hidden = true;
   }
@@ -2283,7 +2667,24 @@ function renderEpisodes() {
   grid.innerHTML = '';
   const prog = getJSON()[state.slug] || {};
   const watched = prog.watched || [];
+  // per-episode audio narrowing (small shows, see probeTrack): the episode
+  // list can hold eps the selected track doesn't have (source tags go stale)
+  const auds = state.epAuds || null;
+  // "new release" tiles, freshest N at the end of the grid (works for shows
+  // whose episode numbers don't run 1..N — specials, renumbered seasons):
+  //   favorited shows  → the bell panel's tracking count
+  //   opened before    → the visit baseline's growth since the last visit
+  //   never touched it → on the recently-updated feed right now = last tile
+  const track = notifActive().find((n) => n.slug === state.slug);
+  let freshCount = track
+    ? Number(track.newCount) || 0
+    : (state.visitNew ? state.visitNew.hi - state.visitNew.lo + 1 : 0);
+  if (recentSet.has(state.slug)) freshCount = Math.max(freshCount, 1);
+  freshCount = Math.min(freshCount, state.episodes.length);
+  const firstFreshIdx = state.episodes.length - freshCount;
+  let ei = 0;
   for (const ep of state.episodes) {
+    if (auds && auds[ep.num] && auds[ep.num][state.type] === false) continue; // no audio here
     const btn = el('button', 'ep-btn');
     btn.dataset.num = ep.num; // FIND EP filter matches on this
     const num = el('span', 'ep-num', ep.num);
@@ -2301,11 +2702,20 @@ function renderEpisodes() {
       btn.classList.add('dead');
       btn.title = 'This episode is unavailable at the source (all embeds dead). Click to retry anyway.';
     }
+    // the freshest tiles carry the same comet rim the NEW pill (bell rows) wear
+    if (ei >= firstFreshIdx) btn.classList.add('ep-new');
     btn.addEventListener('click', () =>
       startPlayback(ep.num, state.type, { push: state.view !== 'playerView' }));
     grid.appendChild(btn);
+    ei++;
   }
   renderMetaLine(); // refresh the "EP n" segment after a playback round trip
+  // header + pills follow what the grid shows (the sweep may have narrowed it
+  // to the eps the selected track actually has); the FIND box only earns its
+  // keep on shows long enough to need hunting
+  $('epCount').textContent = grid.children.length;
+  $('epFind').hidden = state.episodes.length < 25;
+  renderAudioPills();
   applyEpFilter();
 }
 
@@ -2352,7 +2762,11 @@ document.querySelectorAll('[data-back]').forEach((b) => {
 
 /* ---------------- player ---------------- */
 
-function stopPlayback() {
+function stopPlayback(restarting) {
+  // pv: sheet closed, chrome stripped, brightness released — a seamless
+  // stream swap (server/SUB↔DUB switch) passes restarting so pv KEEPS
+  // rotated fullscreen instead of unwinding it mid-swap
+  emitPv('stop', { restarting: !!restarting });
   restoreVideoToPlayer();
   if (state.hls) { state.hls.destroy(); state.hls = null; }
   const video = $('video');
@@ -2439,7 +2853,11 @@ async function fillPlayerDetail() {
 }
 
 async function startPlayback(epNum, type, opts = {}) {
-  stopPlayback();
+  if (appOffline) {
+    offlineNotice();
+    return; // lockdown: streaming needs the network — profile cards never enter the player offline
+  }
+  stopPlayback(true); // pv stays rotated fullscreen across the swap
   state.epNum = String(epNum);
   state.type = type;
   syncSwapToggle();
@@ -2478,11 +2896,22 @@ async function startPlayback(epNum, type, opts = {}) {
     // pre-resolved by the server-dropdown switch — skip the lookup entirely
     src = opts.src;
   } else {
+    // resolve with the user's preferred server first (an explicit failover
+    // hop's server wins, else the settings default / last manual pick).
+    // A failure here is not the dead-episode flow below — it just means
+    // this episode doesn't offer that server or its stream is dead, so
+    // rerun the standard first-available resolve without pinning one.
+    const want = opts.server || prefServer();
+    const sourceUrl = (server) =>
+      `/api/sources?slug=${encodeURIComponent(state.slug)}&ep=${encodeURIComponent(epNum)}&type=${type}` +
+      (server ? `&server=${encodeURIComponent(server)}` : '');
     try {
-      src = await api(
-        `/api/sources?slug=${encodeURIComponent(state.slug)}&ep=${encodeURIComponent(epNum)}&type=${type}` +
-          (opts.server ? `&server=${encodeURIComponent(opts.server)}` : '')
-      );
+      try {
+        src = await api(sourceUrl(want));
+      } catch {
+        if (state.playId !== playId) return;
+        src = await api(sourceUrl(''));
+      }
     } catch (e) {
       if (state.playId !== playId) return;
       // auto-fallback to the other audio type; adopt fb as the requested type so
@@ -2582,21 +3011,10 @@ async function startPlayback(epNum, type, opts = {}) {
     hls.attachMedia(video);
   }
 
-  // subtitles
-  const def = (src.subtitles || []).find((s) => s.default) || src.subtitles[0];
-  if (def && def.proxiedSrc) {
-    try {
-      const vtt = await (await fetch(def.proxiedSrc)).text();
-      const blob = URL.createObjectURL(new Blob([vtt], { type: 'text/vtt' }));
-      const track = document.createElement('track');
-      track.kind = 'subtitles';
-      track.label = def.label || 'English';
-      track.srclang = 'en';
-      track.src = blob;
-      track.default = true;
-      $('video').appendChild(track);
-    } catch { /* subtitles optional */ }
-  }
+  // subtitles: mounted by player-controls.js on the pv:source event below —
+  // it fetches EVERY offered .vtt (the default one is just first), builds the
+  // <track> list and drives the in-player subtitle picker (app.js only wants
+  // to know the default track exists; the picker owns switching)
 
   // resume position
   const saved = getJSON()[state.slug];
@@ -2608,6 +3026,7 @@ async function startPlayback(epNum, type, opts = {}) {
   }
 
   setupWatchers(src);
+  emitPv('source'); // pv: subtitle tracks, sheet, speed/quality mirrors
 }
 
 // repeated stalling while a quality is LOCKED means the stream is too heavy
@@ -2654,6 +3073,7 @@ function buildQualityMenu(hls) {
     hls.currentLevel = pick.i;
     toast(`Quality locked to ${pick.h}p (change in Settings)`);
   }
+  emitPv('sync'); // pv: quality rows in the settings sheet match the new levels
 }
 
 $('qualitySel').addEventListener('change', (e) => {
@@ -2790,6 +3210,43 @@ function resetWatchBudget() {
   if (videoActive()) video.play().catch(() => {});
 }
 
+// rewarded-ad failure streak (per day): when AdMob has no inventory the tester
+// would be hard-stuck at the wall, so after every 3rd failed attempt the
+// budget hands back a grace chunk instead (see the adReward handler below)
+const AD_FAIL_GRACE_EVERY = 3;
+const AD_GRACE_MIN = 15;
+
+// a partial refill that keeps the rest of today's spend — unlike
+// resetWatchBudget (full refill for ads / free desktop reset)
+function graceRefill(secs) {
+  state.watchUsed = Math.max(0, (state.watchUsed || 0) - secs);
+  state.watchDate = todayKey();
+  state.watchPersistNow = true;
+  persistWatch();
+  $('watchUpOverlay').hidden = true;
+  updateWatchBadge();
+  const video = $('video');
+  if (videoActive()) video.play().catch(() => {});
+}
+
+function storedAdFail() {
+  const f = prefs().adFail;
+  return f && f.date === todayKey() ? f.count || 0 : 0;
+}
+
+function bumpAdFail() {
+  const n = storedAdFail() + 1;
+  const p = prefs();
+  p.adFail = { date: todayKey(), count: n };
+  setPrefsSilent(p);
+  return n;
+}
+
+function clearAdFail() {
+  const p = prefs();
+  if (p.adFail) { delete p.adFail; setPrefsSilent(p); }
+}
+
 // desktop has no AdMob SDK — the reset stays free; Android earns it by
 // watching a rewarded ad (see the watchAdBtn handler below)
 if (!IS_ANDROID) {
@@ -2801,7 +3258,7 @@ if (!IS_ANDROID) {
 } else {
   $('watchAdBtn').hidden = false;
   $('watchUpText').textContent =
-    "You've used all 45 minutes of watch time for today. Watch a short ad to refill them, or exit the player — tomorrow brings a fresh 45 minutes.";
+    "You've used all 45 minutes of watch time for today. Watch a short ad to refill them, or exit the player — tomorrow brings a fresh 45 minutes. If an ad can't load, a few retries are rewarded with grace time.";
 }
 
 // rewarded ad refill: hand off to the Expo shell, which loads/shows a Google
@@ -2879,10 +3336,17 @@ function syncSwapToggle() {
    the bare label while nothing is known yet */
 function renderAudioPills() {
   const c = state.audioCounts || {};
+  const auds = state.epAuds || null; // probed per-episode truth beats tags
   document.querySelectorAll('#typeToggle button').forEach((b) => {
     const t = b.dataset.type;
-    const n = c[t] || (state.audioAvail && state.audioAvail[t] && state.episodes.length
+    let n = c[t] || (state.audioAvail && state.audioAvail[t] && state.episodes.length
       ? state.episodes.length : null);
+    if (auds && Object.keys(auds).length) {
+      const probed = auds.filter
+        ? 0
+        : Object.values(auds).reduce((acc, a) => acc + (a && a[t] === true ? 1 : 0), 0);
+      n = probed || null; // probe answered; the tagged count goes stale
+    }
     b.textContent = n ? `${t.toUpperCase()} ${n} EP` : t.toUpperCase();
   });
 }
@@ -2913,6 +3377,7 @@ function updateServerSel(src) {
   }
   if (src.provider && names.includes(src.provider)) sel.value = src.provider;
   sel.hidden = names.length < 2;
+  emitPv('sync'); // pv: server rows in the settings sheet match the new providers
 }
 
 $('serverSel').addEventListener('change', async (e) => {
@@ -2932,6 +3397,10 @@ $('serverSel').addEventListener('change', async (e) => {
     );
     if (state.playId !== playId || state.view !== 'playerView') return;
     saveProgress(); // remember the position in the outgoing server's stream
+    // the user's pick becomes the default for future playbacks (syncs via prefs)
+    const p = prefs();
+    p.defaultServer = want;
+    setPrefs(p);
     startPlayback(epNum, type, { push: false, src });
   } catch (err) {
     toast(`${want}: ${err.message || err}`, true);
@@ -2988,6 +3457,13 @@ function fmtSyncWhen(ts) {
 
 function renderSyncUI(s) {
   lastSyncStatus = s;
+  // persist the payload so an offline cold start keeps the signed-in identity
+  // (and the avatar) on the profile page; a signed-out poll clears the copy so
+  // a stale session can never resurrect after sign-out
+  try {
+    if (s.signedIn) localStorage.setItem(LAST_SYNC_KEY, JSON.stringify(s));
+    else localStorage.removeItem(LAST_SYNC_KEY);
+  } catch { /* private mode etc. */ }
   // the navbar avatar mirrors the signed-in identity: the locally cached photo
   // (pictureLocal → /avatar) when we have it — it survives offline — falling
   // back to a generic user glyph. Kept above the render-state early return:
@@ -3011,7 +3487,7 @@ function renderSyncUI(s) {
   const wasLocked = !gate.hidden;
   const guest = isGuest();
   document.body.classList.toggle('guest', guest);
-  if (s.configured && s.portAvailable !== false && !s.signedIn && !guest) {
+  if (s.configured && s.portAvailable !== false && !s.signedIn && !guest && !appOffline) {
     gate.hidden = false;
     document.body.classList.add('auth-locked');
   } else {
@@ -3025,6 +3501,20 @@ function renderSyncUI(s) {
       showView('homeView');
     }
   }
+  // the gate is a full-screen brand-dark page: tell the Android shell so its
+  // system-bar strips match it even in the light theme
+  const gateUp = !gate.hidden;
+  if (gateUp !== lastGateChrome && window.ReactNativeWebView) {
+    lastGateChrome = gateUp;
+    window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'gate', up: gateUp }));
+  }
+  // remember for the next boot whether a sign-in could be live. Guest mode is
+  // deliberately NOT counted here: its sessionStorage flag clears on relaunch,
+  // and the welcome / sign-in page must come back on every launch.
+  try {
+    localStorage.setItem(GATE_SEEN_SIGNED_IN,
+      (s.signedIn || !s.configured || s.portAvailable === false) ? '0' : '1');
+  } catch { /* private mode etc. */ }
   const state = JSON.stringify([s.configured, s.signedIn, s.email, s.lastSync, s.lastError, s.syncing, s.portAvailable]);
   if (state === lastSyncRender) return;
   lastSyncRender = state;
@@ -3050,6 +3540,79 @@ function renderSyncUI(s) {
   $('signOutBtn').hidden = !(s.configured && s.signedIn);
 }
 
+let lastGateChrome = null; // last gate visibility reported to the Android shell
+
+/* offline lockdown (see the showView/topNav guards): the header pill flips on
+   connectivity changes and the app folds back to the profile. Profile, its
+   settings page and a show's detail page are the only places that work
+   without the network. */
+let appOffline = false; // kept true by setOfflineChrome
+const OFFLINE_OK_VIEWS = new Set(['profileView', 'detailView', 'settingsView']);
+let offlineNoticeShown = false; // once per session — don't spam on every blocked tap
+
+function offlineNotice() {
+  if (offlineNoticeShown) return;
+  offlineNoticeShown = true;
+  toast('Internet is off — your profile holds your saved shows.');
+}
+
+// offline a detail page shows the hero's info card only — the tab row and its
+// panels (EPISODE / SEASONS / RELATED / CAST) are all network-backed
+function applyOfflineDetail() {
+  $('detailTabs').hidden = true;
+  for (const id of Object.values(DETAIL_PANELS)) $(id).hidden = true;
+}
+
+function setOfflineChrome() {
+  const off = typeof navigator !== 'undefined' && navigator.onLine === false;
+  if (off === appOffline) { if (off) applyOfflineDetail(); return; }
+  appOffline = off;
+  const el0 = $('offlinePill');
+  if (el0) el0.hidden = !off;
+  if (!off) {
+    // back online: any current view is suddenly fine again; a detail page that
+    // stayed open re-opens itself — the full fetch restores the episode grid
+    // and the tab row (offline it showed the hero card only)
+    offlineNoticeShown = false; // the next offline stretch earns a fresh notice
+    if (state.view === 'detailView' && state.slug) {
+      openDetail(state.slug, state.title, state.poster);
+    }
+    return;
+  }
+  // going offline: if the welcome gate is up, dismiss it — it can't be
+  // answered anyway (Google sign-in needs the network). The session runs as
+  // an implicit guest and lands on the profile like offline boots do.
+  const gate = $('loginGate');
+  if (gate && !gate.hidden) {
+    gate.hidden = true;
+    document.body.classList.remove('auth-locked');
+    lastGateChrome = false;
+    try { window.ReactNativeWebView?.postMessage(JSON.stringify({ type: 'gate', up: false })); } catch {}
+    try {
+      const cached = JSON.parse(localStorage.getItem(LAST_SYNC_KEY));
+      if (!(cached && cached.signedIn)) setGuest(true);
+    } catch { setGuest(true); }
+    renderProfile();
+    showView('profileView'); // (offline-allowed view)
+    offlineNotice();
+    return;
+  }
+  // going offline: if we're sitting on a network-backed page it would just
+  // error out — fold onto the profile right away
+  if (state.view && !OFFLINE_OK_VIEWS.has(state.view)) {
+    renderProfile(); // fills from the last known status + card lists
+    showView('profileView'); // (offline-allowed view)
+    offlineNotice();
+  } else if (state.view === 'detailView') {
+    applyOfflineDetail();
+  } else {
+    offlineNotice();
+  }
+}
+window.addEventListener('online', setOfflineChrome);
+window.addEventListener('offline', setOfflineChrome);
+setOfflineChrome(); // listeners only fire on a change — paint the current state
+
 async function pollSync() {
   try {
     const s = await api('/api/auth/status');
@@ -3061,6 +3624,7 @@ async function pollSync() {
       lastDataRev = s.dataRev;
       if (!boot) {
         await restoreFromBackup();
+        applyTheme(); // cloud sync can change it on another device
         renderFavorites();
         if (!$('profileView').hidden) renderWatching();
         renderContinue();
@@ -3403,7 +3967,11 @@ function fmtWatchTotal(sec) {
 }
 
 function renderProfile(s) {
-  s = s || lastSyncStatus;
+  s = s || lastSyncStatus || (() => {
+    // cold-start fallback: the live status is only in memory, so offline after
+    // a restart reads the last persisted copy instead of showing "Not signed in"
+    try { return JSON.parse(localStorage.getItem(LAST_SYNC_KEY)) || null; } catch { return null; }
+  })();
   const signedIn = !!(s && s.signedIn);
   const avatar = $('profileAvatar');
   const fallback = $('profileAvatarFallback');
@@ -3495,28 +4063,35 @@ settingsToggle('defTypeToggle', () => prefs().defaultType || 'sub', (v) => {
   toast(`Default audio: ${v.toUpperCase()}`);
 });
 
-settingsToggle('r18Toggle', () => (prefs().showR18 ? 'show' : 'hide'), (v) => {
+// default stream server: a plain select like video quality, but also pushed
+// through the settings re-sync so a cloud-synced pref shows on page open
+const defServerSel = $('defServerSel');
+const syncDefServer = () => {
+  defServerSel.value = prefServer();
+  if (defServerSel.selectedIndex < 0) defServerSel.value = ''; // unknown pref (synced from another device) — show Auto
+};
+defServerSel.addEventListener('change', () => {
   const p = prefs();
-  p.showR18 = v === 'show';
+  p.defaultServer = defServerSel.value;
   setPrefs(p);
-  rebuildRatingFilter(); // R+/Rx options exist only while 18+ is shown
-  toast(`18+ content ${p.showR18 ? 'now shown' : 'now hidden'} — refreshing this view`);
-  // re-apply to whatever is on screen right now
-  if (state.view === 'browseView') loadBrowse();
-  else if (state.view === 'profileView') { /* favorites keep showing what you saved */ }
-  else {
-    // home view: redo the current content (search results or recent cards)
-    if (!$('resultsSection').hidden && state.query) loadResults(false);
-    else loadRecent();
-  }
-  renderUpcoming(); // the Coming soon section + marquee re-filter too
+  toast(`Default server: ${defServerSel.value || 'Auto'}`);
 });
+syncDefServer();
+syncSettingsToggles.push(syncDefServer);
 
 settingsToggle('pushNotifToggle', () => (prefs().pushNotifs === false ? 'off' : 'on'), (v) => {
   const p = prefs();
   p.pushNotifs = v === 'on';
   setPrefs(p);
   toast(p.pushNotifs ? 'Favorite update alerts on' : 'Favorite update alerts off');
+});
+
+settingsToggle('themeToggle', () => (prefs().theme === 'light' ? 'light' : 'dark'), (v) => {
+  const p = prefs();
+  p.theme = v;
+  setPrefs(p);
+  applyTheme(v);
+  toast(v === 'light' ? 'Light theme on' : 'Dark theme on');
 });
 
 /* keyboard */
@@ -3607,7 +4182,9 @@ function renderUpdateUI(u) {
   // Play-distributed build: Google Play policy forbids in-app update flows, so
   // the server reports the updater disabled there — drop the whole section.
   // (disabled without Android = desktop dev build, which keeps the row.)
-  const updatesGone = !!u.disabled && IS_ANDROID;
+  // Android runs on the Play Store channel only — no APK self-update UI
+  // (Play installers update via Play; the launch shell checks Play itself).
+  const updatesGone = IS_ANDROID;
   $('updatesRow').hidden = updatesGone;
   $('updatesSep').hidden = updatesGone;
   const banner = $('updateBanner');
@@ -3767,12 +4344,31 @@ window.addEventListener('message', (ev) => {
       btn.textContent = 'Watch ad — +45 min';
       if (msg.ok) {
         resetWatchBudget();
+        clearAdFail();
         toast('Ad reward — 45:00 of watch time back');
       } else if (!$('watchUpOverlay').hidden) {
-        toast(
-          msg.error ? 'Ad failed: ' + String(msg.error).slice(0, 80) : 'Ad closed early — no reward',
-          true
-        );
+        if (msg.error) {
+          // a real load failure (no-fill / timeout / no inventory) — the raw
+          // AdMob wording ("[googleMobileAds/no-fill] No fill.") becomes plain
+          // speech, and repeated failures hand back grace time in small chunks
+          const raw = String(msg.error);
+          const fails = bumpAdFail();
+          if (fails >= AD_FAIL_GRACE_EVERY) {
+            clearAdFail();
+            graceRefill(AD_GRACE_MIN * 60);
+            toast('No ad available right now — ' + AD_GRACE_MIN + ' min of grace watch time added');
+          } else {
+            const left = AD_FAIL_GRACE_EVERY - fails;
+            toast(/no.?fill/i.test(raw)
+              ? 'No ad available right now — try again in a moment (' + left +
+                ' more ' + (left === 1 ? 'try' : 'tries') + ' until grace time kicks in)'
+              : "Ad didn't load — try again in a moment", true);
+          }
+        } else {
+          // user closed the ad before the reward unlocked — their choice, so
+          // it doesn't count toward the grace streak
+          toast('Ad closed early — no reward', true);
+        }
       }
     }
   } catch { /* non-JSON — ignore */ }
@@ -3974,15 +4570,14 @@ async function loadFeedback() {
     return;
   }
   const list = $('feedbackList');
-  list.innerHTML = '';
-  list.appendChild(el('p', 'hint', 'Loading…'));
+  renderSkeletonFeedback(list, 3);
   try {
     const { items } = await api('/api/feedback');
     feedbackItems = items;
     $('feedbackComposer').hidden = true;
     renderFeedback();
   } catch (e) {
-    list.innerHTML = '';
+    list.innerHTML = ''; // don't leave placeholders up
     $('feedbackEmpty').hidden = true;
     list.appendChild(el('p', 'hint', 'Could not load feedback: ' + e.message));
   }
@@ -4046,6 +4641,93 @@ document.querySelectorAll('#feedbackSort .sort-btn').forEach((b) => {
 
 /* ---------------- init ---------------- */
 
+/* ---------------- custom dropdown menus ---------------- */
+
+// Android's native <select> menus render as a system dialog — own dark theme,
+// radio glyphs, mismatched typography — nothing like the rest of the app.
+// Every select is upgraded: the real control stays in the DOM (hidden, kept in
+// sync) so the change handlers and dynamic option rebuilds keep working, and
+// a themed trigger button opens a themed popup instead. All colors flow from
+// the tokens, so dark/light both follow.
+function makeDropdown(sel) {
+  const trig = el('button', 'dd-trigger');
+  trig.type = 'button';
+  trig.appendChild(el('span', 'dd-label'));
+  trig.insertAdjacentHTML('beforeend', icon('chev-down'));
+  const pop = el('div', 'dd-pop');
+  const labelText = () => {
+    const o = sel.selectedOptions[0];
+    return o ? o.textContent : '';
+  };
+  const close = () => {
+    pop.remove();
+    document.removeEventListener('click', outside, true);
+    document.removeEventListener('scroll', scrollAway, true);
+    window.removeEventListener('resize', close);
+  };
+  const outside = (e) => { if (!pop.contains(e.target)) close(); };
+  const scrollAway = (e) => { if (!pop.contains(e.target)) close(); }; // capture: also inner scroll containers
+  const open = () => {
+    // rebuild from the live option list — browse filters / player selects
+    // repopulate their selects at any time
+    pop.innerHTML = '';
+    for (const o of sel.options) {
+      const it = el('button', 'dd-item' + (o.selected ? ' sel' : ''));
+      it.type = 'button';
+      it.appendChild(el('span', null, o.textContent));
+      it.insertAdjacentHTML('beforeend', icon('check'));
+      it.addEventListener('click', () => {
+        close();
+        if (o.selected) return;
+        sel.value = o.value;
+        sel.dispatchEvent(new Event('change'));
+      });
+      pop.appendChild(it);
+    }
+    document.body.appendChild(pop);
+    // anchor off the trigger, clamped inside the viewport (flip up at the
+    // screen edge, shift sideways when the trigger sits too far right)
+    const r = trig.getBoundingClientRect();
+    pop.style.left = pop.style.right = pop.style.top = '';
+    pop.style.top = `${Math.round(r.bottom + 6)}px`;
+    pop.style.minWidth = `${Math.round(r.width)}px`;
+    if (r.bottom + pop.offsetHeight + 8 > innerHeight) {
+      pop.style.top = `${Math.max(8, r.top - pop.offsetHeight - 6)}px`;
+    }
+    if (r.left + pop.offsetWidth + 8 > innerWidth) {
+      pop.style.left = `${Math.max(8, Math.round(innerWidth - pop.offsetWidth - 8))}px`;
+    } else {
+      pop.style.left = `${Math.round(r.left)}px`;
+    }
+    document.addEventListener('click', outside, true);
+    document.addEventListener('scroll', scrollAway, true);
+    window.addEventListener('resize', close);
+    // long lists (genres) should present the current choice, not always the top
+    const s = pop.querySelector('.dd-item.sel');
+    if (s) s.scrollIntoView({ block: 'nearest' });
+  };
+  trig.addEventListener('click', () => (pop.isConnected ? close() : open()));
+  const sync = () => {
+    trig.querySelector('.dd-label').textContent = labelText();
+    trig.hidden = sel.hidden;
+  };
+  // options and `hidden` flip from anywhere (player dropdown rebuilds on every
+  // resolve) — watch the select instead of hoping for change events
+  new MutationObserver(sync).observe(sel, { childList: true, attributes: true });
+  sel.addEventListener('change', sync);
+  // .value is also assigned bare (genre-chip navigation, filter resets) with
+  // no change event — interpose the setter so the trigger text follows along
+  const valDesc = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value');
+  Object.defineProperty(sel, 'value', {
+    get() { return valDesc.get.call(sel); },
+    set(v) { valDesc.set.call(sel, v); sync(); },
+  });
+  sync();
+  sel.style.display = 'none'; // keep it: value + change events stay authoritative
+  sel.insertAdjacentElement('afterend', trig);
+}
+document.querySelectorAll('select').forEach(makeDropdown);
+
 let splashGone = false;
 function hideSplash() {
   if (splashGone) return;
@@ -4066,17 +4748,44 @@ function hideSplash() {
 (async () => {
   // failsafe: never trap the user behind the splash
   setTimeout(hideSplash, 15000);
+  // first-paint the login gate when last boot ended signed out (or we don't
+  // know better): the gate used to open one auth-status poll later and the
+  // homepage could flash through the frame between hideSplash() and that poll.
+  // Signed-in boots stored '0' (set by renderSyncUI) and skip straight to home.
+  // Offline skips it too: a gate can't be answered without the network.
+  let seenSignedIn = null;
+  try { seenSignedIn = localStorage.getItem(GATE_SEEN_SIGNED_IN); } catch { /* private mode */ }
+  if (seenSignedIn !== '0' && !appOffline) {
+    $('loginGate').hidden = false;
+    lastGateChrome = true;
+    try { window.ReactNativeWebView?.postMessage(JSON.stringify({ type: 'gate', up: true })); } catch {}
+  }
   await restoreFromBackup(); // must run before anything reads prefs/favorites
+  applyTheme(); // theme is a pref too — flip the shell + tokens before paint
   showTosGate(); // first launch only — overlays the boot splash until accepted
   applySidebar();
   initBrowseUI();
   buildLoginCollage(); // gate backdrop posters (shown/hidden by pollSync)
   renderNotifPanel(); // restore badge/panel state saved before the last close
-  renderContinue();
-  await loadRecent(); // home is ready once the recently-updated grid lands
-  loadHero(); // hero spotlight carousel (best-effort, server-cached 30 min)
-  loadUpcoming(); // marquee + Coming soon grid (best-effort, cached 30 min)
-  hideSplash();
+  // offline boot: no welcome/sign-in page — the network is down, so the app
+  // lands straight on the profile (the only page that renders offline) as an
+  // implicit guest session; every home load below would just fail anyway
+  if (appOffline) {
+    try {
+      const cached = JSON.parse(localStorage.getItem(LAST_SYNC_KEY));
+      if (!(cached && cached.signedIn)) setGuest(true);
+    } catch { setGuest(true); }
+    renderProfile(); // fills from the last known status + card lists
+    showView('profileView');
+    offlineNotice();
+    hideSplash();
+  } else {
+    renderContinue();
+    await loadRecent(); // home is ready once the recently-updated grid lands
+    loadHero(); // hero spotlight carousel (best-effort, server-cached 30 min)
+    loadUpcoming(); // marquee + Coming soon grid (best-effort, cached 30 min)
+    hideSplash();
+  }
   loadVersion();
   document.querySelector('.side-item[data-nav="home"]').classList.add('active');
   checkFavEpisodes(); // and every 10 minutes afterwards
