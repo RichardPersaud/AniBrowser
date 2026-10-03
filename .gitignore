@@ -21,6 +21,7 @@ play-assets/
 desktop/scripts/*probe*.js
 desktop/scripts/imap-*.js
 desktop/scripts/mailer-*.js
+desktop/scripts/mailer-msg.txt
 desktop/scripts/repair-utf8.js
 desktop/scripts/signup-body-test.js
 desktop/scripts/test-new-badge.js
