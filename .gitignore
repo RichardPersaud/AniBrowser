@@ -5,8 +5,8 @@ node_modules/
 dist/
 *.log
 
-# local build artifacts (the installable APK ships via GitHub Releases instead)
-*.apk
+# installers ship via GitHub Releases, never in git
+*.exe
 releases/
 
 # local agent/tooling workspace (not part of the app)
@@ -14,6 +14,17 @@ releases/
 .agents/
 skills-lock.json
 brag-output/
+.shots/
+play-assets/
 
-# expo app: gradle intermediates
-expo-app/modules/**/android/build/
+# one-off debugging/diagnostic scripts with hardcoded creds or throwaway output
+desktop/scripts/*probe*.js
+desktop/scripts/imap-*.js
+desktop/scripts/mailer-*.js
+desktop/scripts/repair-utf8.js
+desktop/scripts/signup-body-test.js
+desktop/scripts/test-new-badge.js
+desktop/scripts/test-profile-sync.js
+desktop/scripts/test-sync-engine.js
+desktop/scripts/live-sync-check.js
+desktop/scripts/smoke-offline.js
