@@ -16,11 +16,14 @@ const MAIL_DEBUG = !!process.env.MAIL_DEBUG;
 const SMTP_HOST = 'smtp.gmail.com';
 const SMTP_PORT = 465;
 const TO = 'nukenoob2010@gmail.com'; // from AND to — a self-notification inbox
-const USER = 'nukenoob2010@gmail.com';
-// Gmail app password ("***REMOVED***" with the spaces stripped)
-const PASS = '***REMOVED***';
+// Credentials are environment-only (SMTP_USER / SMTP_PASS, a Gmail app
+// password) — never committed, never shipped. Unset => every send is skipped
+// with a log line so the app keeps working without mail.
+const USER = process.env.SMTP_USER || '';
+const PASS = process.env.SMTP_PASS || '';
 const NUL = String.fromCharCode(0);
-const AUTH = Buffer.from(NUL + USER + NUL + PASS).toString('base64');
+const authPlain = () =>
+  Buffer.from(NUL + USER + NUL + PASS).toString('base64');
 
 const b64 = (s) => Buffer.from(s, 'utf8').toString('base64');
 
@@ -78,7 +81,7 @@ function smtpSession(message) {
     // already sent in start()); ONLY a step with final:true closes the session.
     const steps = [
       { code: 220 },
-      { code: 250, next: () => `AUTH PLAIN ${AUTH}\r\n` },
+      { code: 250, next: () => `AUTH PLAIN ${authPlain()}\r\n` },
       { code: 235, next: () => `MAIL FROM:<${USER}>\r\n` },
       { code: 250, next: () => `RCPT TO:<${TO}>\r\n` },
       { code: 250, next: () => 'DATA\r\n' },
@@ -127,6 +130,10 @@ function smtpSession(message) {
 let chain = Promise.resolve();
 
 function queue(kind, subject, text) {
+  if (!USER || !PASS) {
+    console.warn(`[mail] ${kind} notice skipped: SMTP_USER/SMTP_PASS not set`);
+    return Promise.resolve();
+  }
   chain = chain.then(() => smtpSession(buildMessage(subject, text)))
     .then(() => console.log(`[mail] ${kind} notice sent`))
     .catch((e) => console.error(`[mail] ${kind} notice failed:`, e.message || e));
